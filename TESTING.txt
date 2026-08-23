@@ -1,0 +1,20 @@
+NameplateSCT Vanilla v0.4.1-test
+
+TESTING.md is the canonical test matrix for the current build.
+
+Quick smoke test:
+1. Target a visible enemy nameplate.
+2. /np status
+3. /np test
+4. /np crit
+5. Produce real damage and a real critical hit.
+6. Kill a unit and immediately engage another nearby unit to exercise native nameplate recycling.
+7. /np errors
+8. If anything looks wrong: /np dump 50
+
+v0.4.1 focus:
+- bidirectional GUID <-> native nameplate tracking
+- cleanup when native nameplate frames are recycled
+- cached active-text plate references
+- no further nameplate resolution after a combat text detaches
+- existing fountain/critical movement intentionally unchanged

@@ -1,14 +1,8 @@
-## Interface: 11508, 11507
-## Version: @project-version@
-## Title: NameplateSCT
-## Author: mpstark, Justwait
-## SavedVariables: NameplateSCTDB
-## Notes: Nameplate-based scrolling combat text.
-## OptionalDeps: Ace3, LibEasing
+## Interface: 11200
+## Title: NameplateSCT Vanilla |cff888888(Turtle/SuperWoW test)|r
+## Notes: Vanilla 1.12.1 adaptation of NameplateSCT for Turtle WoW + SuperWoW.
+## Author: Vanilla adaptation based on NameplateSCT by mpstark & Justwait
+## Version: 0.4.1-test
+## SavedVariables: NameplateSCTVanillaDB, NameplateSCTVanillaDebug
 
-## X-Curse-Project-ID: 269544
-## X-Wago-ID: rN4VDxKD
-
-embeds.xml
-Locales\locale.xml
-NameplateSCT.lua
+NameplateSCT_Vanilla.lua
