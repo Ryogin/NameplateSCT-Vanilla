@@ -1,15 +1,14 @@
-# NameplateSCT Vanilla
+# NameplateSCT-Vanilla
 
 A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/NameplateSCT), rewritten for the original WoW client and SuperWoW.
 
-The project keeps the core idea of displaying scrolling combat text on enemy nameplates, but most of the implementation is specific to the Vanilla 1.12 API, Turtle WoW combat-log strings, and SuperWoW GUID/nameplate extensions.
+The project keeps the core idea of displaying scrolling combat text on enemy nameplates, but most of the implementation is specific to the Vanilla 1.12 API and SuperWoW GUID/nameplate extensions.
 
-> **Current status:** `0.4.1-test` — development/test build.
+> **Current status:** `0.4.1a` — development build.
 
 ## Requirements
 
 - World of Warcraft 1.12.1 compatible client
-- Turtle WoW
 - SuperWoW
 - English combat-log strings are currently assumed by the parser
 
@@ -28,7 +27,7 @@ No Ace3, LibEasing, LibSharedMedia, Masque, or ShaguPlates dependency is require
 - Parsing for several player-owned outgoing damage, critical, reflect, and avoidance events
 - Internal debug/error capture and diagnostic slash commands
 
-## v0.4.1-test
+## v0.4.1a
 
 This patch focuses on nameplate tracking stability rather than new visual features.
 
@@ -47,17 +46,17 @@ See [`TESTING.md`](TESTING.md) for the current test matrix.
 Place the addon folder in your WoW installation:
 
 ```text
-World of Warcraft/Interface/AddOns/NameplateSCT_Vanilla/
+World of Warcraft/Interface/AddOns/NameplateSCT-Vanilla/
 ```
 
 The folder should contain at least:
 
 ```text
-NameplateSCT_Vanilla.toc
-NameplateSCT_Vanilla.lua
+NameplateSCT-Vanilla.toc
+NameplateSCT-Vanilla.lua
 ```
 
-Enable **NameplateSCT Vanilla** from the AddOns menu and make sure SuperWoW is installed and active.
+Enable **NameplateSCT-Vanilla** from the AddOns menu and make sure SuperWoW is installed and active.
 
 ## Commands
 
@@ -96,13 +95,13 @@ The Vanilla version is intentionally not being forced into the architecture of t
 - spell filtering
 - clutter protection / maximum active texts
 - SavedVariables-backed configuration and slash commands
-- broader Turtle WoW / SuperWoW combat-log coverage based on captured real logs
+- broader WoW 1.12.1 / SuperWoW combat-log coverage based on captured real logs
 
 The current fountain trajectory is intentional and is not scheduled for replacement.
 
 ## Credits
 
-NameplateSCT Vanilla is based on and inspired by **NameplateSCT**, originally developed by **mpstark** and **Justwait**.
+NameplateSCT-Vanilla is based on and inspired by **NameplateSCT**, originally developed by **mpstark** and **Justwait**.
 
 Original project: [Justw8/NameplateSCT](https://github.com/Justw8/NameplateSCT)
 

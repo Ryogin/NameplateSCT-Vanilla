@@ -1,8 +1,8 @@
-# NameplateSCT Vanilla Testing
+# NameplateSCT-Vanilla Testing
 
 ## Current build
 
-`0.4.1-test`
+`0.4.1a`
 
 Primary goal: verify that recycled native nameplate frames cannot leave stale GUID mappings and that active combat text remains attached to the correct unit without resolving the plate every frame.
 
@@ -23,7 +23,7 @@ Expected:
 - Synthetic critical text uses the existing vertical/POW animation.
 - No Lua errors are reported.
 
-## 0.4.1 recycled-nameplate test
+## 0.4.1a recycled-nameplate test
 
 This is the main regression test for the patch.
 
@@ -104,7 +104,7 @@ If combat text appears over the wrong unit, capture:
 
 ## Version history relevant to current testing
 
-### 0.4.1-test
+### 0.4.1a
 
 - Bidirectional GUID/nameplate cache.
 - Recycled native-frame cleanup.

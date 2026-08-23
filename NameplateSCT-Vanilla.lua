@@ -1,11 +1,11 @@
--- NameplateSCT Vanilla v0.4.1-test
--- First diagnostic build for WoW 1.12 / Turtle WoW + SuperWoW.
+-- NameplateSCT-Vanilla v0.4.1a
+-- Diagnostic build for WoW 1.12.1 + SuperWoW.
 -- Goal: validate SuperWoW GUID <-> native nameplate <-> combat-log path.
 
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.4.1-test"
+local VERSION = "0.4.1a"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -222,7 +222,7 @@ end
 
 -- Build a spell-name -> icon lookup from the player spellbook.  This is
 -- intentionally independent of modern GetSpellInfo APIs, which do not exist
--- in the 1.12 client. SuperWoW/Turtle keeps the classic spellbook functions.
+-- in the 1.12 client, which uses the classic spellbook functions.
 local function RebuildSpellTextureCache()
   spellTextures = {}
   if not GetNumSpellTabs or not GetSpellTabInfo or not GetSpellName then return end
@@ -257,7 +257,7 @@ local function GetSpellTextureByName(spell)
   texture = spellTextures[spell]
   if texture then return texture end
 
-  -- Turtle's combat log expands the active Seal in Judgement's damage name,
+  -- Some combat-log formats expand the active Seal in Judgement's damage name,
   -- while the spellbook icon is stored under the base "Judgement" spell.
   if string.find(spell, "^Judgement of ") then
     return spellTextures["Judgement"]
@@ -549,8 +549,8 @@ local function UpdateTexts()
   end
 end
 
--- Parser for the English RAW_COMBATLOG strings emitted by the current
--- Turtle WoW/SuperWoW build.  It deliberately matches only player-owned
+-- Parser for English RAW_COMBATLOG strings from WoW 1.12.1 with SuperWoW.
+-- It deliberately matches only player-owned
 -- outgoing damage/misses, so party members' hits are ignored.
 local function ParseOutgoing(rawText)
   if not rawText then return nil end
@@ -586,7 +586,7 @@ local function ParseOutgoing(rawText)
   _, _, amount, school, guid = string.find(rawText, "^You reflect (%d+) ([%a]+) damage to (0x[%x]+)%.")
   if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school=school, spell=nil, critical=nil, reflected=1 } end
 
-  -- Miss/resist outcomes observed in the supplied Turtle combat log.
+  -- Miss/resist outcomes observed in captured combat-log samples.
   _, _, spell, guid = string.find(rawText, "^Your (.-) was resisted by (0x[%x]+)%.")
   if guid then return { guid=guid, text="RESIST", kind="miss", spell=spell } end
   _, _, spell, guid = string.find(rawText, "^Your (.-) was dodged by (0x[%x]+)%.")
@@ -668,7 +668,7 @@ function NSCT:TestCritTarget()
   end
   self:ScanNameplates(1)
   if self:Display(guid, "CRIT 999", { kind="damage", school="Physical", critical=1 }) then
-    Chat("Synthetic CRIT sent. v0.4.1: recycled nameplate mappings are cleaned and active text caches its plate safely.")
+    Chat("Synthetic CRIT sent. v0.4.1a: recycled nameplate mappings are cleaned and active text caches its plate safely.")
   else
     Chat("Target GUID exists, but its nameplate frame was not resolved.")
   end

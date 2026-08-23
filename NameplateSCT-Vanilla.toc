@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: NameplateSCT-Vanilla
+## Notes: Vanilla 1.12.1 adaptation of NameplateSCT with SuperWoW nameplate support.
+## Author: Vanilla adaptation based on NameplateSCT by mpstark & Justwait
+## Version: 0.4.1a
+## SavedVariables: NameplateSCTVanillaDB, NameplateSCTVanillaDebug
+
+NameplateSCT-Vanilla.lua

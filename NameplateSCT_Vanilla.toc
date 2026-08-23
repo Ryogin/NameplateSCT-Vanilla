@@ -1,8 +1,0 @@
-## Interface: 11200
-## Title: NameplateSCT Vanilla |cff888888(Turtle/SuperWoW test)|r
-## Notes: Vanilla 1.12.1 adaptation of NameplateSCT for Turtle WoW + SuperWoW.
-## Author: Vanilla adaptation based on NameplateSCT by mpstark & Justwait
-## Version: 0.4.1-test
-## SavedVariables: NameplateSCTVanillaDB, NameplateSCTVanillaDebug
-
-NameplateSCT_Vanilla.lua

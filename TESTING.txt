@@ -1,4 +1,4 @@
-NameplateSCT Vanilla v0.4.1-test
+NameplateSCT-Vanilla v0.4.1a
 
 TESTING.md is the canonical test matrix for the current build.
 
@@ -12,7 +12,7 @@ Quick smoke test:
 7. /np errors
 8. If anything looks wrong: /np dump 50
 
-v0.4.1 focus:
+v0.4.1a focus:
 - bidirectional GUID <-> native nameplate tracking
 - cleanup when native nameplate frames are recycled
 - cached active-text plate references
