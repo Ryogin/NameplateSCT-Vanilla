@@ -1,4 +1,4 @@
--- NameplateSCT-Vanilla v0.4.3-test
+-- NameplateSCT-Vanilla v0.4.4-test
 -- Development build for WoW 1.12.1.
 -- Native nameplate discovery works without enhanced client APIs; GUID resolution
 -- is used automatically when a compatible client exposes it.
@@ -6,7 +6,7 @@
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.4.3-test"
+local VERSION = "0.4.4-test"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -25,6 +25,7 @@ local scanElapsed = 0
 local initializedChildren = 0
 local rawCombatLogRegistered = nil
 local nativeCombatEventCount = 0
+local nativeOptionalCombatEventCount = 0
 local nativeCombatBackendAvailable = nil
 local nativePatternCache = {}
 local oldErrorHandler = nil
@@ -678,7 +679,7 @@ local function DisplayOnPlate(plate, guid, text, info, resolutionMode)
   end
 
   table.insert(activeTexts, fs)
-  DebugLog("DISPLAY", "mode=" .. tostring(fs.resolutionMode) .. " guid=" .. tostring(fs.guid) .. " name=" .. tostring(fs.plateName) .. " text=" .. tostring(text) .. " kind=" .. tostring(info.kind) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " pow=" .. tostring(fs.pow) .. " icon=" .. tostring(texture) .. " height=" .. tostring(size) .. " popStart=" .. tostring(fs.popStartHeight))
+  DebugLog("DISPLAY", "mode=" .. tostring(fs.resolutionMode) .. " guid=" .. tostring(fs.guid) .. " name=" .. tostring(fs.plateName) .. " text=" .. tostring(text) .. " kind=" .. tostring(info.kind) .. " type=" .. tostring(info.damageType) .. " result=" .. tostring(info.result) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic) .. " reflected=" .. tostring(info.reflected) .. " pow=" .. tostring(fs.pow) .. " icon=" .. tostring(texture) .. " height=" .. tostring(size) .. " popStart=" .. tostring(fs.popStartHeight))
   return 1
 end
 
@@ -829,6 +830,13 @@ local NATIVE_COMBAT_EVENTS = {
   "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE",
 }
 
+-- Useful classification sources that are not required to activate the native
+-- backend. Keeping them optional prevents a client missing one niche event from
+-- forcing the addon back to RAW_COMBATLOG for all normal outgoing combat.
+local OPTIONAL_NATIVE_COMBAT_EVENTS = {
+  "CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF",
+}
+
 local function EscapeLuaPatternChar(ch)
   if string.find(ch, "[%^%$%(%)%.%[%]%*%-%+%?]") then
     return "%" .. ch
@@ -950,39 +958,51 @@ local function CanonicalSchool(localizedSchool)
   return localizedSchool
 end
 
-local function NewNativeDamage(data, damageType, critical, periodic)
+local function NewNormalizedDamage(data, damageType, critical, periodic, reflected)
   if not data then return nil end
+
+  local finalType = damageType
+  if periodic then
+    finalType = "periodic"
+  elseif reflected then
+    finalType = "reflected"
+  end
+
   return {
-    kind = periodic and "periodic" or "damage",
+    kind = "damage",
     source = "player",
-    damageType = damageType,
+    damageType = finalType,
+    result = critical and "crit" or "hit",
     targetName = data.targetName,
     amount = data.amount,
     spell = data.spell,
     school = CanonicalSchool(data.school) or "Physical",
     critical = critical and 1 or nil,
     periodic = periodic and 1 or nil,
+    reflected = reflected and 1 or nil,
   }
 end
 
-local function NewNativeMiss(data, text, damageType)
+local function NewNormalizedMiss(data, result, damageType, periodic)
   if not data then return nil end
   return {
     kind = "miss",
     source = "player",
     damageType = damageType,
+    result = string.lower(result or "MISS"),
     targetName = data.targetName,
     spell = data.spell,
-    text = text,
+    text = result,
+    periodic = periodic and 1 or nil,
   }
 end
 
 local function ParseNativeMeleeHit(message)
   local data = CaptureGlobal(message, "COMBATHITSELFOTHER", { "targetName", "amount" })
-  if data then return NewNativeDamage(data, "autoattack", nil, nil) end
+  if data then return NewNormalizedDamage(data, "autoattack", nil, nil, nil) end
 
   data = CaptureGlobal(message, "COMBATHITCRITSELFOTHER", { "targetName", "amount" })
-  if data then return NewNativeDamage(data, "autoattack", 1, nil) end
+  if data then return NewNormalizedDamage(data, "autoattack", 1, nil, nil) end
   return nil
 end
 
@@ -999,7 +1019,7 @@ local function ParseNativeMeleeMiss(message)
   local i
   for i = 1, table.getn(missPatterns) do
     local data = CaptureGlobal(message, missPatterns[i][1], { "targetName" })
-    if data then return NewNativeMiss(data, missPatterns[i][2], "autoattack") end
+    if data then return NewNormalizedMiss(data, missPatterns[i][2], "autoattack", nil) end
   end
   return nil
 end
@@ -1009,49 +1029,58 @@ local function ParseNativeSpell(message)
 
   -- Physical abilities omit a school suffix in the Vanilla combat log.
   data = CaptureGlobal(message, "SPELLLOGCRITSELFOTHER", { "spell", "targetName", "amount" })
-  if data then return NewNativeDamage(data, "ability", 1, nil) end
+  if data then return NewNormalizedDamage(data, "ability", 1, nil, nil) end
 
   data = CaptureGlobal(message, "SPELLLOGSELFOTHER", { "spell", "targetName", "amount" })
-  if data then return NewNativeDamage(data, "ability", nil, nil) end
+  if data then return NewNormalizedDamage(data, "ability", nil, nil, nil) end
 
   -- Spells with an explicit damage school.
   data = CaptureGlobal(message, "SPELLLOGCRITSCHOOLSELFOTHER", { "spell", "targetName", "amount", "school" })
-  if data then return NewNativeDamage(data, "spell", 1, nil) end
+  if data then return NewNormalizedDamage(data, "spell", 1, nil, nil) end
 
   data = CaptureGlobal(message, "SPELLLOGSCHOOLSELFOTHER", { "spell", "targetName", "amount", "school" })
-  if data then return NewNativeDamage(data, "spell", nil, nil) end
+  if data then return NewNormalizedDamage(data, "spell", nil, nil, nil) end
 
+  -- Avoidance results that require a physical attack are classified as
+  -- abilities; spell-like outcomes remain spells. SPELLMISSSELFOTHER is kept
+  -- under spell because Vanilla does not expose enough data to infer otherwise.
   local missPatterns = {
-    { "SPELLMISSSELFOTHER", "MISS" },
-    { "SPELLDODGEDSELFOTHER", "DODGE" },
-    { "SPELLPARRIEDSELFOTHER", "PARRY" },
-    { "SPELLBLOCKEDSELFOTHER", "BLOCK" },
-    { "SPELLRESISTSELFOTHER", "RESIST" },
-    { "SPELLLOGABSORBSELFOTHER", "ABSORB" },
-    { "SPELLIMMUNESELFOTHER", "IMMUNE" },
-    { "SPELLREFLECTSELFOTHER", "REFLECT" },
-    { "SPELLEVADEDSELFOTHER", "EVADE" },
+    { "SPELLMISSSELFOTHER", "MISS", "spell" },
+    { "SPELLDODGEDSELFOTHER", "DODGE", "ability" },
+    { "SPELLPARRIEDSELFOTHER", "PARRY", "ability" },
+    { "SPELLBLOCKEDSELFOTHER", "BLOCK", "ability" },
+    { "SPELLRESISTSELFOTHER", "RESIST", "spell" },
+    { "SPELLLOGABSORBSELFOTHER", "ABSORB", "spell" },
+    { "SPELLIMMUNESELFOTHER", "IMMUNE", "spell" },
+    { "SPELLREFLECTSELFOTHER", "REFLECT", "spell" },
+    { "SPELLEVADEDSELFOTHER", "EVADE", "ability" },
   }
   local i
   for i = 1, table.getn(missPatterns) do
     data = CaptureGlobal(message, missPatterns[i][1], { "spell", "targetName" })
-    if data then return NewNativeMiss(data, missPatterns[i][2], "ability") end
+    if data then return NewNormalizedMiss(data, missPatterns[i][2], missPatterns[i][3], nil) end
   end
   return nil
 end
 
 local function ParseNativePeriodic(message)
   local data = CaptureGlobal(message, "PERIODICAURADAMAGESELFOTHER", { "targetName", "amount", "school", "spell" })
-  if data then return NewNativeDamage(data, "spell", nil, 1) end
+  if data then return NewNormalizedDamage(data, "spell", nil, 1, nil) end
 
   -- A periodic tick can be completely absorbed and use the normal spell absorb
   -- combat string instead of the periodic-damage string.
   data = CaptureGlobal(message, "SPELLLOGABSORBSELFOTHER", { "spell", "targetName" })
   if data then
-    local info = NewNativeMiss(data, "ABSORB", "spell")
-    info.periodic = 1
-    return info
+    return NewNormalizedMiss(data, "ABSORB", "periodic", 1)
   end
+  return nil
+end
+
+local function ParseNativeDamageShield(message)
+  -- DAMAGESHIELDSELFOTHER carries amount, localized damage school, and target.
+  -- The originating aura name is not included in this Vanilla combat string.
+  local data = CaptureGlobal(message, "DAMAGESHIELDSELFOTHER", { "amount", "school", "targetName" })
+  if data then return NewNormalizedDamage(data, "reflected", nil, nil, 1) end
   return nil
 end
 
@@ -1064,6 +1093,8 @@ local function ParseNativeCombatEvent(eventName, message)
     return ParseNativeSpell(message)
   elseif eventName == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or eventName == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" then
     return ParseNativePeriodic(message)
+  elseif eventName == "CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF" then
+    return ParseNativeDamageShield(message)
   end
   return nil
 end
@@ -1099,18 +1130,27 @@ function NSCT:HandleNativeCombatEvent(eventName, message)
   -- is unavailable.
   local preferTarget = 1
   if info.periodic then preferTarget = nil end
-  DebugLog("PARSED", "backend=native event=" .. tostring(eventName) .. " type=" .. tostring(info.damageType) .. " amount=" .. tostring(info.amount) .. " text=" .. tostring(info.text) .. " target=" .. tostring(info.targetName) .. " guid=" .. tostring(info.guid) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic))
+  DebugLog("PARSED", "backend=native event=" .. tostring(eventName) .. " kind=" .. tostring(info.kind) .. " type=" .. tostring(info.damageType) .. " result=" .. tostring(info.result) .. " amount=" .. tostring(info.amount) .. " text=" .. tostring(info.text) .. " target=" .. tostring(info.targetName) .. " guid=" .. tostring(info.guid) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic) .. " reflected=" .. tostring(info.reflected))
   self:DisplayResolved(info.guid, info.targetName, text, info, preferTarget)
 end
 
 local function RegisterNativeCombatEvents(frame)
   nativeCombatEventCount = 0
+  nativeOptionalCombatEventCount = 0
+
   local i
   for i = 1, table.getn(NATIVE_COMBAT_EVENTS) do
     local eventName = NATIVE_COMBAT_EVENTS[i]
     local ok = pcall(function() frame:RegisterEvent(eventName) end)
     if ok then nativeCombatEventCount = nativeCombatEventCount + 1 end
   end
+
+  for i = 1, table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS) do
+    local eventName = OPTIONAL_NATIVE_COMBAT_EVENTS[i]
+    local ok = pcall(function() frame:RegisterEvent(eventName) end)
+    if ok then nativeOptionalCombatEventCount = nativeOptionalCombatEventCount + 1 end
+  end
+
   nativeCombatBackendAvailable = nativeCombatEventCount == table.getn(NATIVE_COMBAT_EVENTS) and 1 or nil
 end
 
@@ -1120,7 +1160,7 @@ local function CountNativePatterns()
     "MISSEDSELFOTHER", "VSDODGESELFOTHER", "VSPARRYSELFOTHER", "VSBLOCKSELFOTHER", "VSABSORBSELFOTHER", "VSIMMUNESELFOTHER", "VSEVADESELFOTHER",
     "SPELLLOGSELFOTHER", "SPELLLOGCRITSELFOTHER", "SPELLLOGSCHOOLSELFOTHER", "SPELLLOGCRITSCHOOLSELFOTHER",
     "SPELLMISSSELFOTHER", "SPELLDODGEDSELFOTHER", "SPELLPARRIEDSELFOTHER", "SPELLBLOCKEDSELFOTHER", "SPELLRESISTSELFOTHER", "SPELLLOGABSORBSELFOTHER", "SPELLIMMUNESELFOTHER", "SPELLREFLECTSELFOTHER", "SPELLEVADEDSELFOTHER",
-    "PERIODICAURADAMAGESELFOTHER",
+    "PERIODICAURADAMAGESELFOTHER", "DAMAGESHIELDSELFOTHER",
   }
   local found = 0
   local i
@@ -1137,57 +1177,95 @@ local function ParseOutgoing(rawText)
   if not rawText then return nil end
   local _, _, guid, amount
   local _, _, spell, school
+  local data
 
   -- White melee hits / crits.
   _, _, guid, amount = string.find(rawText, "^You hit (0x[%x]+) for (%d+)%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school="Physical", critical=nil } end
+  if guid then
+    data = { amount=tonumber(amount), school="Physical" }
+    local info = NewNormalizedDamage(data, "autoattack", nil, nil, nil)
+    info.guid = guid
+    return info
+  end
   _, _, guid, amount = string.find(rawText, "^You crit (0x[%x]+) for (%d+)%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school="Physical", critical=1 } end
+  if guid then
+    data = { amount=tonumber(amount), school="Physical" }
+    local info = NewNormalizedDamage(data, "autoattack", 1, nil, nil)
+    info.guid = guid
+    return info
+  end
 
   -- Direct spell damage.
   _, _, spell, guid, amount, school = string.find(rawText, "^Your (.-) hits (0x[%x]+) for (%d+) ([%a]+) damage%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school=school, spell=spell, critical=nil } end
+  if guid then
+    data = { amount=tonumber(amount), school=school, spell=spell }
+    local info = NewNormalizedDamage(data, "spell", nil, nil, nil)
+    info.guid = guid
+    return info
+  end
   _, _, spell, guid, amount, school = string.find(rawText, "^Your (.-) crits (0x[%x]+) for (%d+) ([%a]+) damage%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school=school, spell=spell, critical=1 } end
+  if guid then
+    data = { amount=tonumber(amount), school=school, spell=spell }
+    local info = NewNormalizedDamage(data, "spell", 1, nil, nil)
+    info.guid = guid
+    return info
+  end
 
   -- Physical abilities such as Maul omit an explicit damage-school suffix.
-  -- Example: "Your Maul hits 0x... for 44."
   _, _, spell, guid, amount = string.find(rawText, "^Your (.-) hits (0x[%x]+) for (%d+)%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school="Physical", spell=spell, critical=nil } end
+  if guid then
+    data = { amount=tonumber(amount), school="Physical", spell=spell }
+    local info = NewNormalizedDamage(data, "ability", nil, nil, nil)
+    info.guid = guid
+    return info
+  end
   _, _, spell, guid, amount = string.find(rawText, "^Your (.-) crits (0x[%x]+) for (%d+)%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school="Physical", spell=spell, critical=1 } end
+  if guid then
+    data = { amount=tonumber(amount), school="Physical", spell=spell }
+    local info = NewNormalizedDamage(data, "ability", 1, nil, nil)
+    info.guid = guid
+    return info
+  end
 
   -- Player-owned periodic spell damage, e.g. Moonfire.
   _, _, guid, amount, school, spell = string.find(rawText, "^(0x[%x]+) suffers (%d+) ([%a]+) damage from your (.-)%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="periodic", school=school, spell=spell, critical=nil } end
+  if guid then
+    data = { amount=tonumber(amount), school=school, spell=spell }
+    local info = NewNormalizedDamage(data, "spell", nil, 1, nil)
+    info.guid = guid
+    return info
+  end
 
-  -- Player-owned damage shields / reflected damage, e.g. Thorns.
-  -- This RAW_COMBATLOG format does not include the originating aura name here,
-  -- only the school and reflected amount, so intentionally leave spell=nil.
+  -- Player-owned damage shields / reflected damage.
   _, _, amount, school, guid = string.find(rawText, "^You reflect (%d+) ([%a]+) damage to (0x[%x]+)%.")
-  if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school=school, spell=nil, critical=nil, reflected=1 } end
+  if guid then
+    data = { amount=tonumber(amount), school=school }
+    local info = NewNormalizedDamage(data, "reflected", nil, nil, 1)
+    info.guid = guid
+    return info
+  end
 
   -- Miss/resist outcomes observed in captured combat-log samples.
   _, _, spell, guid = string.find(rawText, "^Your (.-) was resisted by (0x[%x]+)%.")
-  if guid then return { guid=guid, text="RESIST", kind="miss", spell=spell } end
+  if guid then data={spell=spell}; local info=NewNormalizedMiss(data,"RESIST","spell",nil); info.guid=guid; return info end
   _, _, spell, guid = string.find(rawText, "^Your (.-) was dodged by (0x[%x]+)%.")
-  if guid then return { guid=guid, text="DODGE", kind="miss", spell=spell } end
+  if guid then data={spell=spell}; local info=NewNormalizedMiss(data,"DODGE","ability",nil); info.guid=guid; return info end
   _, _, spell, guid = string.find(rawText, "^Your (.-) is parried by (0x[%x]+)%.")
-  if guid then return { guid=guid, text="PARRY", kind="miss", spell=spell } end
+  if guid then data={spell=spell}; local info=NewNormalizedMiss(data,"PARRY","ability",nil); info.guid=guid; return info end
   _, _, guid = string.find(rawText, "^You miss (0x[%x]+)%.")
-  if guid then return { guid=guid, text="MISS", kind="miss" } end
+  if guid then data={}; local info=NewNormalizedMiss(data,"MISS","autoattack",nil); info.guid=guid; return info end
   _, _, guid = string.find(rawText, "^You attack%. (0x[%x]+) dodges%.")
-  if guid then return { guid=guid, text="DODGE", kind="miss" } end
+  if guid then data={}; local info=NewNormalizedMiss(data,"DODGE","autoattack",nil); info.guid=guid; return info end
   _, _, guid = string.find(rawText, "^You attack%. (0x[%x]+) parries%.")
-  if guid then return { guid=guid, text="PARRY", kind="miss" } end
+  if guid then data={}; local info=NewNormalizedMiss(data,"PARRY","autoattack",nil); info.guid=guid; return info end
   _, _, guid = string.find(rawText, "^You attack%. (0x[%x]+) blocks%.")
-  if guid then return { guid=guid, text="BLOCK", kind="miss" } end
+  if guid then data={}; local info=NewNormalizedMiss(data,"BLOCK","autoattack",nil); info.guid=guid; return info end
   _, _, spell, guid = string.find(rawText, "^Your (.-) was immune to (0x[%x]+)%.")
-  if guid then return { guid=guid, text="IMMUNE", kind="miss", spell=spell } end
+  if guid then data={spell=spell}; local info=NewNormalizedMiss(data,"IMMUNE","spell",nil); info.guid=guid; return info end
   _, _, spell, guid = string.find(rawText, "^Your (.-) was absorbed by (0x[%x]+)%.")
-  if guid then return { guid=guid, text="ABSORB", kind="miss", spell=spell } end
+  if guid then data={spell=spell}; local info=NewNormalizedMiss(data,"ABSORB","spell",nil); info.guid=guid; return info end
   _, _, guid = string.find(rawText, "^You attack%. (0x[%x]+) evades%.")
-  if guid then return { guid=guid, text="EVADE", kind="miss" } end
+  if guid then data={}; local info=NewNormalizedMiss(data,"EVADE","autoattack",nil); info.guid=guid; return info end
 
   return nil
 end
@@ -1206,7 +1284,7 @@ function NSCT:HandleRawCombatLog(originalEvent, rawText)
   end
 
   local text = info.text or info.amount
-  DebugLog("PARSE", "event=" .. tostring(originalEvent) .. " amount=" .. tostring(info.amount) .. " text=" .. tostring(info.text) .. " dst=" .. tostring(info.guid) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " reflected=" .. tostring(info.reflected))
+  DebugLog("PARSE", "backend=raw event=" .. tostring(originalEvent) .. " kind=" .. tostring(info.kind) .. " type=" .. tostring(info.damageType) .. " result=" .. tostring(info.result) .. " amount=" .. tostring(info.amount) .. " text=" .. tostring(info.text) .. " dst=" .. tostring(info.guid) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic) .. " reflected=" .. tostring(info.reflected))
   self:Display(info.guid, text, info)
 end
 
@@ -1244,7 +1322,7 @@ function NSCT:PrintStatus()
   Chat("native scanner: active; known=" .. tostring(plateCount) .. ", visible=" .. tostring(visibleCount) .. ", named=" .. tostring(namedCount))
   Chat("UnitExists GUID: " .. (unitExistsGUID and "yes" or "no") .. "; UnitGUID API: " .. (UnitGUID and "yes" or "no") .. "; UnitNameplate API: " .. (UnitNameplate and "yes" or "no"))
   local selectedBackend = nativeCombatBackendAvailable and "native CHAT_MSG" or (rawCombatLogRegistered and "RAW_COMBATLOG" or "none")
-  Chat("native combat backend: " .. (nativeCombatBackendAvailable and "active" or "partial/unavailable") .. " (" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " events); display backend: " .. selectedBackend)
+  Chat("native combat backend: " .. (nativeCombatBackendAvailable and "active" or "partial/unavailable") .. " (" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " required; " .. tostring(nativeOptionalCombatEventCount) .. "/" .. tostring(table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS)) .. " optional); display backend: " .. selectedBackend)
   Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable") .. (nativeCombatBackendAvailable and " (diagnostic/fallback only)" or ""))
   Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
   Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
@@ -1261,7 +1339,7 @@ function NSCT:TestTarget()
   end
 
   local plate, mode = self:ResolveNameplate(guid, name, 1)
-  if plate and DisplayOnPlate(plate, guid, "TEST 123", { kind="damage" }, mode) then
+  if plate and DisplayOnPlate(plate, guid, "TEST 123", { kind="damage", source="player", damageType="autoattack", result="hit", school="Physical" }, mode) then
     Chat("Test text sent to target nameplate using " .. tostring(mode) .. " resolution.")
   else
     Chat("Target nameplate was not resolved. Show its nameplate, then use /np status and /np dump 50.")
@@ -1278,7 +1356,7 @@ function NSCT:TestCritTarget()
   end
 
   local plate, mode = self:ResolveNameplate(guid, name, 1)
-  if plate and DisplayOnPlate(plate, guid, "CRIT 999", { kind="damage", school="Physical", critical=1 }, mode) then
+  if plate and DisplayOnPlate(plate, guid, "CRIT 999", { kind="damage", source="player", damageType="autoattack", result="crit", school="Physical", critical=1 }, mode) then
     Chat("Synthetic CRIT sent using " .. tostring(mode) .. " resolution. Existing movement is unchanged.")
   else
     Chat("Target nameplate was not resolved.")
@@ -1531,7 +1609,7 @@ frame:SetScript("OnEvent", function()
     DebugLog("INIT", "loaded version=" .. VERSION)
     local patternCount, patternTotal = CountNativePatterns()
     DebugLog("INIT", "native nameplate scanner enabled; UnitNameplate=" .. tostring(UnitNameplate and 1 or nil) .. " UnitGUID=" .. tostring(UnitGUID and 1 or nil) .. " RAW_COMBATLOG=" .. tostring(rawCombatLogRegistered))
-    DebugLog("INIT", "native combat events=" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " patterns=" .. tostring(patternCount) .. "/" .. tostring(patternTotal) .. " selected=" .. tostring(nativeCombatBackendAvailable and "native" or (rawCombatLogRegistered and "raw" or "none")))
+    DebugLog("INIT", "native combat events=" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " required optional=" .. tostring(nativeOptionalCombatEventCount) .. "/" .. tostring(table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS)) .. " patterns=" .. tostring(patternCount) .. "/" .. tostring(patternTotal) .. " selected=" .. tostring(nativeCombatBackendAvailable and "native" or (rawCombatLogRegistered and "raw" or "none")))
     RebuildSpellTextureCache()
     Chat("loaded " .. VERSION .. ". Native nameplate and combat-event backends are active. Type /np status.")
   elseif event == "SPELLS_CHANGED" then
@@ -1544,7 +1622,7 @@ frame:SetScript("OnEvent", function()
   elseif event == "PLAYER_TARGET_CHANGED" then
     NSCT:ScanNameplates(1)
     DebugLog("TARGET", "name=" .. tostring(UnitName("target")) .. " guid=" .. tostring(GetGUID("target")))
-  elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_COMBAT_SELF_MISSES" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" then
+  elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_COMBAT_SELF_MISSES" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" or event == "CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF" then
     NSCT:HandleNativeCombatEvent(event, arg1)
   elseif event == "RAW_COMBATLOG" then
     NSCT:HandleRawCombatLog(arg1, arg2)

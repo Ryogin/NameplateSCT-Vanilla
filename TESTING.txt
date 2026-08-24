@@ -1,4 +1,4 @@
-NameplateSCT-Vanilla v0.4.3-test
+NameplateSCT-Vanilla v0.4.4-test
 
 TESTING.md is the canonical test matrix for the current build.
 
@@ -6,7 +6,7 @@ Quick native-combat smoke test:
 1. Enable enemy nameplates.
 2. /np clear
 3. /np status
-4. Confirm "native combat backend: active (5/5 events)" if possible.
+4. Confirm "native combat backend: active (5/5 required; ... optional)" if possible.
 5. Target one visible enemy.
 6. Perform several white attacks and at least one ability/spell.
 7. If available, test a crit, miss/dodge/parry/resist, and a DoT tick.
@@ -18,9 +18,10 @@ Expected log flow:
 
 Any [UNMATCHED] entry is useful parser test data and should be preserved exactly.
 
-v0.4.3-test focus:
-- native Vanilla CHAT_MSG_* outgoing-combat parsing
-- localized parsing from Blizzard global combat strings
-- normalized autoattack / ability / spell / periodic / miss events
+v0.4.4-test focus:
+- explicit damage-source and result classification
+- normalized autoattack / ability / spell / periodic / reflected / miss events
+- optional CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF reflected-damage parsing
+- native and RAW fallback events share the same internal contract
 - no duplicate SCT when RAW_COMBATLOG is also present
 - existing native nameplate resolution and animations remain unchanged

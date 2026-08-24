@@ -4,7 +4,7 @@ A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/Nameplat
 
 The project keeps the core idea of displaying scrolling combat text on enemy nameplates while using a lightweight implementation designed around the Vanilla 1.12 API.
 
-> **Current status:** `0.4.3-test` — development build.
+> **Current status:** `0.4.4-test` — development build.
 
 ## Requirements
 
@@ -27,8 +27,10 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Visibility-generation protection so active text cannot jump onto a recycled frame
 - Native Vanilla outgoing-combat parsing through `CHAT_MSG_*` events
 - Localized combat parsing based on Blizzard global combat strings instead of hard-coded English sentences
-- Normalized outgoing event data for autoattacks, abilities, spells, criticals, periodic damage, and miss outcomes
+- Explicit normalized combat classification for autoattacks, abilities, spells, periodic damage, reflected damage, and miss outcomes
+- Normalized `result` values for hit, crit, miss, dodge, parry, block, resist, absorb, immune, reflect, and evade
 - Native parsing for MISS, DODGE, PARRY, BLOCK, RESIST, ABSORB, IMMUNE, REFLECT, and EVADE where the corresponding Vanilla global string exists
+- Optional native damage-shield/reflected-damage parsing through `CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF` when available
 - RAW_COMBATLOG fallback when the native combat backend is unavailable
 - Normal hit fountain animation
 - Critical hit / miss vertical animation with POW sizing
@@ -36,6 +38,22 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Spell icons resolved from the Vanilla spellbook when available
 - Continued combat text motion when a unit's nameplate disappears
 - Internal debug/error capture and diagnostic slash commands
+
+## v0.4.4-test
+
+This patch formalizes damage-source and outcome classification without changing visible animation behavior.
+
+- Uses a consistent normalized event contract with `kind`, `source`, `damageType`, and `result`.
+- Classifies outgoing damage as `autoattack`, `ability`, `spell`, `periodic`, or `reflected`.
+- Keeps miss/avoidance events as `kind=miss` while preserving the attempted source type.
+- Normalizes outcomes to `hit`, `crit`, `miss`, `dodge`, `parry`, `block`, `resist`, `absorb`, `immune`, `reflect`, or `evade`.
+- Treats periodic damage as normal damage with `damageType=periodic` and `periodic=1`, rather than overloading `kind`.
+- Adds optional native damage-shield parsing from `CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF` / `DAMAGESHIELDSELFOTHER`.
+- Normalizes the RAW_COMBATLOG fallback into the same internal event contract as the native backend.
+- Expands diagnostics so `[PARSED]` and `[PARSE]` include `kind`, `type`, `result`, `periodic`, and `reflected`.
+- Keeps the observed recent-resolution/killing-blow race under observation; no heuristic cache is added in this build.
+
+The existing fountain and critical/miss movement remain unchanged.
 
 ## v0.4.3-test
 

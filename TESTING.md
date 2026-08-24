@@ -2,9 +2,9 @@
 
 ## Current build
 
-`0.4.3-test`
+`0.4.4-test`
 
-Primary goal: validate the native Vanilla outgoing-combat parser against real 1.12.1 combat messages while preserving the already validated native nameplate backend.
+Primary goal: validate explicit damage-source and outcome classification on top of the already working native Vanilla combat parser, without changing visual behavior.
 
 ## Clean-session preparation
 
@@ -17,7 +17,7 @@ Before each focused capture:
 
 Expected:
 
-- `native combat backend: active (5/5 events)` on a normal Vanilla 1.12.1 client.
+- `native combat backend: active (5/5 required; 0/1 or 1/1 optional)` on a compatible Vanilla 1.12.1 client.
 - `display backend: native CHAT_MSG` when the native backend is complete.
 - `RAW_COMBATLOG` may also report as registered, but it must not create duplicate floating text while the native backend is active.
 
@@ -33,7 +33,7 @@ Expected:
 
 - One floating damage number.
 - `[NATIVELOG]` for `CHAT_MSG_COMBAT_SELF_HITS`.
-- `[PARSED] ... type=autoattack` with the target name and amount.
+- `[PARSED] ... kind=damage type=autoattack result=hit` with the target name and amount.
 - A single `[DISPLAY]` entry for that hit.
 
 ### White melee critical
@@ -43,7 +43,7 @@ Expected:
 Expected:
 
 - Critical vertical/POW animation remains unchanged.
-- `[PARSED] ... type=autoattack ... crit=1`.
+- `[PARSED] ... kind=damage type=autoattack result=crit ... crit=1`.
 
 ### Physical ability
 
@@ -51,7 +51,7 @@ Use a physical ability that appears in the combat log as an ability hit (for exa
 
 Expected:
 
-- `[PARSED] ... type=ability`.
+- `[PARSED] ... kind=damage type=ability result=hit` (or `result=crit`).
 - Spell/ability name captured.
 - Physical color.
 - Spell icon shown when the spellbook cache can resolve it.
@@ -62,7 +62,7 @@ Use a direct spell with an explicit damage school.
 
 Expected:
 
-- `[PARSED] ... type=spell`.
+- `[PARSED] ... kind=damage type=spell result=hit` (or `result=crit`).
 - `school` normalized to `Holy`, `Fire`, `Nature`, `Frost`, `Shadow`, or `Arcane` when the client exposes the corresponding Blizzard school global.
 - Appropriate school color.
 - Critical spell hits retain POW behavior.
@@ -74,7 +74,7 @@ Apply a player-owned DoT and allow it to tick.
 Expected:
 
 - Event comes from `CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE` or `CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE`.
-- `[PARSED] ... periodic=1`.
+- `[PARSED] ... kind=damage type=periodic result=hit ... periodic=1`.
 - DoT spell name and damage school captured when present.
 - Periodic events do not blindly prefer a same-named current target when the destination is ambiguous.
 
@@ -97,8 +97,21 @@ EVADE
 Expected:
 
 - The matching outcome appears as miss-style combat text.
-- `[PARSED]` includes `text=<OUTCOME>`.
+- `[PARSED]` includes `kind=miss`, `result=<lowercase outcome>`, and `text=<OUTCOME>`.
+- Physical avoidance from spell/ability messages should classify as `type=ability` for DODGE/PARRY/BLOCK/EVADE; spell-like outcomes should classify as `type=spell` for MISS/RESIST/ABSORB/IMMUNE/REFLECT where Vanilla cannot prove a more specific source.
 - No Lua errors occur when a corresponding Blizzard global string is absent; unsupported formats should become `[UNMATCHED]` rather than breaking execution.
+
+
+## Damage shield / reflected damage
+
+If the class/build can produce outgoing damage from an active damage shield or reactive aura, capture it.
+
+Expected when the client exposes the optional event/global string:
+
+- `CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF` appears in `[NATIVELOG]`.
+- `[PARSED] ... kind=damage type=reflected result=hit ... reflected=1`.
+- The damage school is preserved when `DAMAGESHIELDSELFOTHER` supplies it.
+- Missing support for this optional event must not disable the five-event native combat backend.
 
 ## Unmatched-message capture
 
@@ -168,7 +181,7 @@ If the client provides auxiliary GUIDs:
 /np clearlog
 ```
 
-Important log tags in `0.4.3-test`:
+Important log tags in `0.4.4-test`:
 
 ```text
 [NATIVELOG]  raw native CHAT_MSG_* payload
@@ -179,6 +192,15 @@ Important log tags in `0.4.3-test`:
 ```
 
 ## Version history relevant to current testing
+
+### 0.4.4-test
+
+- Explicit normalized `kind`, `damageType`, and `result` fields.
+- `autoattack` / `ability` / `spell` / `periodic` / `reflected` source classification.
+- Consistent native and RAW fallback event contracts.
+- Optional native damage-shield/reflected-damage event support.
+- Expanded classification diagnostics.
+- No recent-resolution cache yet; late/killing-blow destination races remain observational test data.
 
 ### 0.4.3-test
 
