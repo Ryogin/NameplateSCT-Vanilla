@@ -1,4 +1,4 @@
-NameplateSCT-Vanilla v0.4.2-test
+NameplateSCT-Vanilla v0.4.2a
 
 TESTING.md is the canonical test matrix for the current build.
 
@@ -10,12 +10,17 @@ Quick native-backend smoke test:
 5. /np crit
 6. Move out of nameplate range and back in.
 7. /np errors
-8. If anything looks wrong: /np dump 50
+8. Confirm no immediate "plate disappeared" after /np test or /np crit.
+9. /np clear (or /np clearlog) before a fresh capture.
+10. If anything looks wrong: /np dump 50
 
-v0.4.2-test focus:
+v0.4.2a focus:
 - native WorldFrame nameplate detection without requiring GUID APIs
 - OnShow / OnHide lifecycle tracking
 - native name indexing and target resolution
 - optional exact GUID resolution when available
 - no guessing for ambiguous same-named mobs
+- native-resolution texts remain attached even when an auxiliary GUID exists
+- independent capability reporting in /np status
+- /np clear and /np clearlog diagnostics reset
 - existing fountain/critical movement intentionally unchanged

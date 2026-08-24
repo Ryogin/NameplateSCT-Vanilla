@@ -4,7 +4,7 @@ A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/Nameplat
 
 The project keeps the core idea of displaying scrolling combat text on enemy nameplates while using a lightweight implementation designed around the Vanilla 1.12 API.
 
-> **Current status:** `0.4.2-test` — development build.
+> **Current status:** `0.4.2a` — development build.
 
 ## Requirements
 
@@ -33,6 +33,16 @@ Enhanced GUID/nameplate APIs are optional. When present, NameplateSCT-Vanilla us
 - Continued combat text motion when a unit's nameplate disappears
 - Internal debug/error capture and diagnostic slash commands
 
+## v0.4.2a
+
+This hotfix stabilizes active-text tracking for native nameplate resolutions and improves diagnostics.
+
+- Keeps `target-alpha`, `target-unique-name`, and `unique-name` texts attached to the native frame selected at display time even when an auxiliary GUID is available.
+- Uses exact GUID re-resolution only when the original resolution mode was `guid`.
+- Adds `/np clearlog` as an alias for `/np clear`.
+- Expands `/np status` to report `UnitExists` GUID support, `UnitGUID`, `UnitNameplate`, and `RAW_COMBATLOG` independently.
+- Updates addon metadata for the current maintainer.
+
 ## v0.4.2-test
 
 This patch introduces the native Vanilla nameplate backend.
@@ -50,7 +60,7 @@ This patch introduces the native Vanilla nameplate backend.
 
 ### Current compatibility boundary
 
-`0.4.2-test` removes the GUID requirement from **nameplate discovery and target test rendering**. The existing automatic combat parser still consumes `RAW_COMBATLOG` when a client exposes that event.
+`0.4.2a` retains the GUID-less backend introduced in `0.4.2-test` and removes the GUID requirement from **nameplate discovery and target test rendering**. The existing automatic combat parser still consumes `RAW_COMBATLOG` when a client exposes that event.
 
 A native `CHAT_MSG_*` combat-event backend is planned for the next development step so automatic combat text can also operate without `RAW_COMBATLOG`.
 
@@ -81,6 +91,7 @@ Enable **NameplateSCT-Vanilla** from the AddOns menu and enable enemy nameplates
 /np dump [1-50]
 /np errors
 /np clear
+/np clearlog
 /np auto
 /np sizetest
 /np fonttest

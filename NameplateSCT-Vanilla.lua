@@ -1,4 +1,4 @@
--- NameplateSCT-Vanilla v0.4.2-test
+-- NameplateSCT-Vanilla v0.4.2a
 -- Development build for WoW 1.12.1.
 -- Native nameplate discovery works without enhanced client APIs; GUID resolution
 -- is used automatically when a compatible client exposes it.
@@ -6,7 +6,7 @@
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.4.2-test"
+local VERSION = "0.4.2a"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -722,12 +722,18 @@ local function UpdateTexts()
       local plate = nil
       if not fs.detached then
         -- Keep the plate resolved at Display() time for the lifetime of the text.
-        -- The 0.20s nameplate scan updates guidByPlate when Blizzard recycles a
-        -- frame, so a cached frame is only trusted while its reverse mapping still
-        -- belongs to this combat text's GUID.
+        -- The visibility generation protects native resolutions from recycled
+        -- frames, while exact GUID resolutions additionally validate the reverse
+        -- GUID mapping.
         local cachedPlate = fs.plate
         local generationMatches = cachedPlate and (plateGeneration[cachedPlate] or 0) == (fs.plateGeneration or 0)
-        if fs.guid then
+        -- A GUID may be available even when the destination itself was resolved
+        -- through the native target/name fallback. Only texts whose original
+        -- resolution mode was exact GUID resolution should require a GUID mapping
+        -- on subsequent frames. Native resolutions remain sticky to the frame and
+        -- visibility generation chosen at display time.
+        local exactGUIDTracking = fs.guid and fs.resolutionMode == "guid"
+        if exactGUIDTracking then
           if cachedPlate and generationMatches and guidByPlate[cachedPlate] == fs.guid and cachedPlate.IsShown and cachedPlate:IsShown() then
             plate = cachedPlate
           else
@@ -736,9 +742,9 @@ local function UpdateTexts()
             if plate then fs.plateGeneration = plateGeneration[plate] or 0 end
           end
         elseif cachedPlate and generationMatches and cachedPlate.IsShown and cachedPlate:IsShown() then
-          -- Native-only resolution is deliberately sticky: once a text is bound
-          -- to a frame, never jump it to another same-named mob. If this plate
-          -- enters a new visibility generation, detach the text instead.
+          -- Native resolution is deliberately sticky: once a text is bound to a
+          -- frame, never jump it to another same-named mob. If this plate enters
+          -- a new visibility generation, detach the text instead.
           if not fs.plateName or plateNameByPlate[cachedPlate] == fs.plateName then
             plate = cachedPlate
           end
@@ -911,9 +917,15 @@ function NSCT:PrintStatus()
   for p in pairs(guidByPlate) do reverseCount = reverseCount + 1 end
   local targetPlate, targetMode = self:GetTargetNameplate()
 
+  local unitExistsGUID = nil
+  if UnitExists then
+    local ok, exists, guid = pcall(UnitExists, "player")
+    if ok and exists and IsGUID(guid) then unitExistsGUID = 1 end
+  end
+
   Chat("version " .. VERSION)
   Chat("native scanner: active; known=" .. tostring(plateCount) .. ", visible=" .. tostring(visibleCount) .. ", named=" .. tostring(namedCount))
-  Chat("enhanced GUID resolution: " .. ((UnitNameplate or UnitGUID or playerGUID) and "available" or "not detected"))
+  Chat("UnitExists GUID: " .. (unitExistsGUID and "yes" or "no") .. "; UnitGUID API: " .. (UnitGUID and "yes" or "no") .. "; UnitNameplate API: " .. (UnitNameplate and "yes" or "no"))
   Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable"))
   Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
   Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
@@ -1174,13 +1186,13 @@ local function SlashHandler(msg)
     NSCT:Dump(rest)
   elseif cmd == "errors" then
     NSCT:PrintErrors()
-  elseif cmd == "clear" then
+  elseif cmd == "clear" or cmd == "clearlog" then
     NSCT:ClearDebug()
   elseif cmd == "auto" then
     NameplateSCTVanillaDB.autoDisplay = not NameplateSCTVanillaDB.autoDisplay
     Chat("automatic parsed damage display: " .. (NameplateSCTVanillaDB.autoDisplay and "ON" or "OFF"))
   else
-    Chat("commands: /np status | test | crit | sizetest | fonttest | plates | dump [1-50] | errors | clear | auto")
+    Chat("commands: /np status | test | crit | sizetest | fonttest | plates | dump [1-50] | errors | clear | clearlog | auto")
   end
 end
 

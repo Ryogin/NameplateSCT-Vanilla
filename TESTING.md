@@ -2,9 +2,9 @@
 
 ## Current build
 
-`0.4.2-test`
+`0.4.2a`
 
-Primary goal: verify native Vanilla nameplate discovery, lifecycle tracking, name indexing, and target resolution with and without enhanced GUID APIs.
+Primary goal: verify native Vanilla nameplate discovery and confirm that native target/name resolutions remain attached for their full animation even when the client exposes an auxiliary GUID.
 
 ## Native Vanilla baseline — highest priority
 
@@ -14,14 +14,16 @@ Run this test in a WoW 1.12.1 environment where `UnitNameplate`, `UnitGUID`, and
 2. Target a visible enemy.
 3. Run `/np status`.
 4. Confirm `native scanner: active` and that `visible` / `named` are greater than zero.
-5. Confirm `enhanced GUID resolution: not detected` is acceptable.
+5. Note the independent capability report for `UnitExists GUID`, `UnitGUID API`, `UnitNameplate API`, and `RAW_COMBATLOG`.
 6. Run `/np test`.
 7. Run `/np crit`.
 8. Run `/np errors`.
+9. Run `/np clear` (or `/np clearlog`) and confirm the saved diagnostic log/error lists reset.
 
 Expected:
 
-- Both synthetic texts appear on the current target's native nameplate without a GUID.
+- Both synthetic texts appear on the current target's native nameplate without requiring exact GUID-to-nameplate resolution.
+- Neither test logs `plate disappeared` immediately after `DISPLAY` while the target plate is still visible.
 - The normal fountain and critical vertical/POW animations are unchanged.
 - No Lua errors occur because `RAW_COMBATLOG` is unavailable.
 
@@ -82,7 +84,7 @@ Expected:
 
 ## Current automatic combat-parser boundary
 
-The automatic parser in `0.4.2-test` still consumes `RAW_COMBATLOG` only when that event exists.
+The automatic parser in `0.4.2a` still consumes `RAW_COMBATLOG` only when that event exists.
 
 Expected on a stock Vanilla environment:
 
@@ -108,6 +110,14 @@ If resolution fails, capture:
 - whether the client exposes an enhanced GUID/nameplate API
 
 ## Version history relevant to current testing
+
+### 0.4.2a
+
+- Fix native-resolution texts detaching immediately when an auxiliary GUID exists.
+- Preserve sticky frame/generation tracking for `target-alpha`, `target-unique-name`, and `unique-name`.
+- Add `/np clearlog` alias.
+- Report optional client capabilities independently in `/np status`.
+- Update addon author metadata to Ryogin.
 
 ### 0.4.2-test
 
