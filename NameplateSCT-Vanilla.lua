@@ -1,4 +1,4 @@
--- NameplateSCT-Vanilla v0.4.2a
+-- NameplateSCT-Vanilla v0.4.3-test
 -- Development build for WoW 1.12.1.
 -- Native nameplate discovery works without enhanced client APIs; GUID resolution
 -- is used automatically when a compatible client exposes it.
@@ -6,7 +6,7 @@
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.4.2a"
+local VERSION = "0.4.3-test"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -24,6 +24,9 @@ local activeTexts = {}
 local scanElapsed = 0
 local initializedChildren = 0
 local rawCombatLogRegistered = nil
+local nativeCombatEventCount = 0
+local nativeCombatBackendAvailable = nil
+local nativePatternCache = {}
 local oldErrorHandler = nil
 local inErrorHandler = nil
 local playerGUID = nil
@@ -815,6 +818,318 @@ local function UpdateTexts()
   end
 end
 
+-- Native Vanilla outgoing-combat backend. Blizzard's own localized global
+-- strings are compiled into Lua search patterns, so this parser does not depend
+-- on hard-coded English combat-log sentences.
+local NATIVE_COMBAT_EVENTS = {
+  "CHAT_MSG_COMBAT_SELF_HITS",
+  "CHAT_MSG_COMBAT_SELF_MISSES",
+  "CHAT_MSG_SPELL_SELF_DAMAGE",
+  "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE",
+  "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE",
+}
+
+local function EscapeLuaPatternChar(ch)
+  if string.find(ch, "[%^%$%(%)%.%[%]%*%-%+%?]") then
+    return "%" .. ch
+  end
+  return ch
+end
+
+local function CompileGlobalPattern(globalName)
+  if nativePatternCache[globalName] ~= nil then
+    local cached = nativePatternCache[globalName]
+    if cached == false then return nil end
+    return cached
+  end
+
+  local globalString = getglobal and getglobal(globalName) or nil
+  if not globalString or globalString == "" then
+    nativePatternCache[globalName] = false
+    return nil
+  end
+
+  local search = "^"
+  local capturesByArgument = {}
+  local captureCount = 0
+  local i = 1
+  local len = string.len(globalString)
+
+  while i <= len do
+    local ch = string.sub(globalString, i, i)
+    if ch ~= "%" then
+      search = search .. EscapeLuaPatternChar(ch)
+      i = i + 1
+    else
+      local nextCh = string.sub(globalString, i + 1, i + 1)
+      if nextCh == "%" then
+        search = search .. "%%"
+        i = i + 2
+      else
+        local j = i + 1
+        local formatCode = "%"
+        local typeChar = nil
+        while j <= len do
+          local fc = string.sub(globalString, j, j)
+          formatCode = formatCode .. fc
+          if string.find(fc, "[cEefgGiouXxqsd]") then
+            typeChar = fc
+            break
+          end
+          j = j + 1
+        end
+
+        if not typeChar then
+          -- Invalid/incomplete formatting code: treat the percent literally.
+          search = search .. "%%"
+          i = i + 1
+        else
+          captureCount = captureCount + 1
+          local _, _, explicitPosition = string.find(formatCode, "(%d+)%$")
+          local argumentPosition = explicitPosition and tonumber(explicitPosition) or captureCount
+          capturesByArgument[argumentPosition] = captureCount
+
+          if typeChar == "d" then
+            search = search .. "(%d+)"
+          else
+            search = search .. "(.+)"
+          end
+          i = j + 1
+        end
+      end
+    end
+  end
+
+  local info = {
+    search = search,
+    capturesByArgument = capturesByArgument,
+    source = globalString,
+  }
+  nativePatternCache[globalName] = info
+  return info
+end
+
+local function CaptureGlobal(message, globalName, fields)
+  if not message then return nil end
+  local pattern = CompileGlobalPattern(globalName)
+  if not pattern then return nil end
+
+  local startPos, endPos, c1, c2, c3, c4, c5, c6 = string.find(message, pattern.search)
+  if not startPos then return nil end
+  local captures = { c1, c2, c3, c4, c5, c6 }
+  local out = {}
+  local i
+  for i = 1, table.getn(fields) do
+    local field = fields[i]
+    local captureIndex = pattern.capturesByArgument[i] or i
+    local value = captures[captureIndex]
+    if field == "amount" then
+      out.amount = tonumber(value)
+    elseif field == "targetName" then
+      out.targetName = value
+    elseif field == "spell" then
+      out.spell = value
+    elseif field == "school" then
+      out.school = value
+    end
+  end
+  return out
+end
+
+local function CanonicalSchool(localizedSchool)
+  if not localizedSchool then return nil end
+  if SPELL_SCHOOL0_CAP and localizedSchool == SPELL_SCHOOL0_CAP then return "Physical" end
+  if SPELL_SCHOOL1_CAP and localizedSchool == SPELL_SCHOOL1_CAP then return "Holy" end
+  if SPELL_SCHOOL2_CAP and localizedSchool == SPELL_SCHOOL2_CAP then return "Fire" end
+  if SPELL_SCHOOL3_CAP and localizedSchool == SPELL_SCHOOL3_CAP then return "Nature" end
+  if SPELL_SCHOOL4_CAP and localizedSchool == SPELL_SCHOOL4_CAP then return "Frost" end
+  if SPELL_SCHOOL5_CAP and localizedSchool == SPELL_SCHOOL5_CAP then return "Shadow" end
+  if SPELL_SCHOOL6_CAP and localizedSchool == SPELL_SCHOOL6_CAP then return "Arcane" end
+  -- English clients already use these canonical values. Unknown localized
+  -- schools are retained for diagnostics and will use the default text color.
+  return localizedSchool
+end
+
+local function NewNativeDamage(data, damageType, critical, periodic)
+  if not data then return nil end
+  return {
+    kind = periodic and "periodic" or "damage",
+    source = "player",
+    damageType = damageType,
+    targetName = data.targetName,
+    amount = data.amount,
+    spell = data.spell,
+    school = CanonicalSchool(data.school) or "Physical",
+    critical = critical and 1 or nil,
+    periodic = periodic and 1 or nil,
+  }
+end
+
+local function NewNativeMiss(data, text, damageType)
+  if not data then return nil end
+  return {
+    kind = "miss",
+    source = "player",
+    damageType = damageType,
+    targetName = data.targetName,
+    spell = data.spell,
+    text = text,
+  }
+end
+
+local function ParseNativeMeleeHit(message)
+  local data = CaptureGlobal(message, "COMBATHITSELFOTHER", { "targetName", "amount" })
+  if data then return NewNativeDamage(data, "autoattack", nil, nil) end
+
+  data = CaptureGlobal(message, "COMBATHITCRITSELFOTHER", { "targetName", "amount" })
+  if data then return NewNativeDamage(data, "autoattack", 1, nil) end
+  return nil
+end
+
+local function ParseNativeMeleeMiss(message)
+  local missPatterns = {
+    { "MISSEDSELFOTHER", "MISS" },
+    { "VSDODGESELFOTHER", "DODGE" },
+    { "VSPARRYSELFOTHER", "PARRY" },
+    { "VSBLOCKSELFOTHER", "BLOCK" },
+    { "VSABSORBSELFOTHER", "ABSORB" },
+    { "VSIMMUNESELFOTHER", "IMMUNE" },
+    { "VSEVADESELFOTHER", "EVADE" },
+  }
+  local i
+  for i = 1, table.getn(missPatterns) do
+    local data = CaptureGlobal(message, missPatterns[i][1], { "targetName" })
+    if data then return NewNativeMiss(data, missPatterns[i][2], "autoattack") end
+  end
+  return nil
+end
+
+local function ParseNativeSpell(message)
+  local data
+
+  -- Physical abilities omit a school suffix in the Vanilla combat log.
+  data = CaptureGlobal(message, "SPELLLOGCRITSELFOTHER", { "spell", "targetName", "amount" })
+  if data then return NewNativeDamage(data, "ability", 1, nil) end
+
+  data = CaptureGlobal(message, "SPELLLOGSELFOTHER", { "spell", "targetName", "amount" })
+  if data then return NewNativeDamage(data, "ability", nil, nil) end
+
+  -- Spells with an explicit damage school.
+  data = CaptureGlobal(message, "SPELLLOGCRITSCHOOLSELFOTHER", { "spell", "targetName", "amount", "school" })
+  if data then return NewNativeDamage(data, "spell", 1, nil) end
+
+  data = CaptureGlobal(message, "SPELLLOGSCHOOLSELFOTHER", { "spell", "targetName", "amount", "school" })
+  if data then return NewNativeDamage(data, "spell", nil, nil) end
+
+  local missPatterns = {
+    { "SPELLMISSSELFOTHER", "MISS" },
+    { "SPELLDODGEDSELFOTHER", "DODGE" },
+    { "SPELLPARRIEDSELFOTHER", "PARRY" },
+    { "SPELLBLOCKEDSELFOTHER", "BLOCK" },
+    { "SPELLRESISTSELFOTHER", "RESIST" },
+    { "SPELLLOGABSORBSELFOTHER", "ABSORB" },
+    { "SPELLIMMUNESELFOTHER", "IMMUNE" },
+    { "SPELLREFLECTSELFOTHER", "REFLECT" },
+    { "SPELLEVADEDSELFOTHER", "EVADE" },
+  }
+  local i
+  for i = 1, table.getn(missPatterns) do
+    data = CaptureGlobal(message, missPatterns[i][1], { "spell", "targetName" })
+    if data then return NewNativeMiss(data, missPatterns[i][2], "ability") end
+  end
+  return nil
+end
+
+local function ParseNativePeriodic(message)
+  local data = CaptureGlobal(message, "PERIODICAURADAMAGESELFOTHER", { "targetName", "amount", "school", "spell" })
+  if data then return NewNativeDamage(data, "spell", nil, 1) end
+
+  -- A periodic tick can be completely absorbed and use the normal spell absorb
+  -- combat string instead of the periodic-damage string.
+  data = CaptureGlobal(message, "SPELLLOGABSORBSELFOTHER", { "spell", "targetName" })
+  if data then
+    local info = NewNativeMiss(data, "ABSORB", "spell")
+    info.periodic = 1
+    return info
+  end
+  return nil
+end
+
+local function ParseNativeCombatEvent(eventName, message)
+  if eventName == "CHAT_MSG_COMBAT_SELF_HITS" then
+    return ParseNativeMeleeHit(message)
+  elseif eventName == "CHAT_MSG_COMBAT_SELF_MISSES" then
+    return ParseNativeMeleeMiss(message)
+  elseif eventName == "CHAT_MSG_SPELL_SELF_DAMAGE" then
+    return ParseNativeSpell(message)
+  elseif eventName == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or eventName == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" then
+    return ParseNativePeriodic(message)
+  end
+  return nil
+end
+
+local function EventTargetGUID(info)
+  if not info or not info.targetName or not UnitName then return nil end
+  if UnitName("target") == info.targetName then
+    return GetGUID("target")
+  end
+  return nil
+end
+
+function NSCT:HandleNativeCombatEvent(eventName, message)
+  DebugLog("NATIVELOG", tostring(eventName) .. " || " .. tostring(message))
+  if not NameplateSCTVanillaDB.autoDisplay then return end
+
+  local info = ParseNativeCombatEvent(eventName, message)
+  if not info then
+    DebugLog("UNMATCHED", tostring(eventName) .. " || " .. tostring(message))
+    return
+  end
+
+  info.guid = EventTargetGUID(info)
+  local text = info.text or info.amount
+  if not text or not info.targetName then
+    DebugLog("UNMATCHED", "parsed incomplete event=" .. tostring(eventName) .. " target=" .. tostring(info.targetName) .. " text=" .. tostring(text) .. " raw=" .. tostring(message))
+    return
+  end
+
+  -- Direct player actions prefer the current target when names match. Periodic
+  -- events are more conservative because a DoT can tick on an off-target unit;
+  -- they fall back to an unambiguous unique-name match when exact GUID mapping
+  -- is unavailable.
+  local preferTarget = 1
+  if info.periodic then preferTarget = nil end
+  DebugLog("PARSED", "backend=native event=" .. tostring(eventName) .. " type=" .. tostring(info.damageType) .. " amount=" .. tostring(info.amount) .. " text=" .. tostring(info.text) .. " target=" .. tostring(info.targetName) .. " guid=" .. tostring(info.guid) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic))
+  self:DisplayResolved(info.guid, info.targetName, text, info, preferTarget)
+end
+
+local function RegisterNativeCombatEvents(frame)
+  nativeCombatEventCount = 0
+  local i
+  for i = 1, table.getn(NATIVE_COMBAT_EVENTS) do
+    local eventName = NATIVE_COMBAT_EVENTS[i]
+    local ok = pcall(function() frame:RegisterEvent(eventName) end)
+    if ok then nativeCombatEventCount = nativeCombatEventCount + 1 end
+  end
+  nativeCombatBackendAvailable = nativeCombatEventCount == table.getn(NATIVE_COMBAT_EVENTS) and 1 or nil
+end
+
+local function CountNativePatterns()
+  local names = {
+    "COMBATHITSELFOTHER", "COMBATHITCRITSELFOTHER",
+    "MISSEDSELFOTHER", "VSDODGESELFOTHER", "VSPARRYSELFOTHER", "VSBLOCKSELFOTHER", "VSABSORBSELFOTHER", "VSIMMUNESELFOTHER", "VSEVADESELFOTHER",
+    "SPELLLOGSELFOTHER", "SPELLLOGCRITSELFOTHER", "SPELLLOGSCHOOLSELFOTHER", "SPELLLOGCRITSCHOOLSELFOTHER",
+    "SPELLMISSSELFOTHER", "SPELLDODGEDSELFOTHER", "SPELLPARRIEDSELFOTHER", "SPELLBLOCKEDSELFOTHER", "SPELLRESISTSELFOTHER", "SPELLLOGABSORBSELFOTHER", "SPELLIMMUNESELFOTHER", "SPELLREFLECTSELFOTHER", "SPELLEVADEDSELFOTHER",
+    "PERIODICAURADAMAGESELFOTHER",
+  }
+  local found = 0
+  local i
+  for i = 1, table.getn(names) do
+    if CompileGlobalPattern(names[i]) then found = found + 1 end
+  end
+  return found, table.getn(names)
+end
+
 -- Parser for English RAW_COMBATLOG strings when an enhanced 1.12 client exposes that event.
 -- It deliberately matches only player-owned
 -- outgoing damage/misses, so party members' hits are ignored.
@@ -880,6 +1195,8 @@ end
 function NSCT:HandleRawCombatLog(originalEvent, rawText)
   DebugLog("RAW", tostring(originalEvent) .. " || " .. tostring(rawText))
   if not NameplateSCTVanillaDB.autoDisplay then return end
+  -- Prevent duplicate SCT when both native CHAT_MSG_* and RAW_COMBATLOG exist.
+  if nativeCombatBackendAvailable then return end
 
   local info = ParseOutgoing(rawText)
   if not info then return end
@@ -926,7 +1243,9 @@ function NSCT:PrintStatus()
   Chat("version " .. VERSION)
   Chat("native scanner: active; known=" .. tostring(plateCount) .. ", visible=" .. tostring(visibleCount) .. ", named=" .. tostring(namedCount))
   Chat("UnitExists GUID: " .. (unitExistsGUID and "yes" or "no") .. "; UnitGUID API: " .. (UnitGUID and "yes" or "no") .. "; UnitNameplate API: " .. (UnitNameplate and "yes" or "no"))
-  Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable"))
+  local selectedBackend = nativeCombatBackendAvailable and "native CHAT_MSG" or (rawCombatLogRegistered and "RAW_COMBATLOG" or "none")
+  Chat("native combat backend: " .. (nativeCombatBackendAvailable and "active" or "partial/unavailable") .. " (" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " events); display backend: " .. selectedBackend)
+  Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable") .. (nativeCombatBackendAvailable and " (diagnostic/fallback only)" or ""))
   Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
   Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
   Chat("debug saved entries: " .. tostring(table.getn(NameplateSCTVanillaDebug.log)) .. ", errors: " .. tostring(table.getn(NameplateSCTVanillaDebug.errors)))
@@ -1201,6 +1520,7 @@ frame:RegisterEvent("VARIABLES_LOADED")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("PLAYER_TARGET_CHANGED")
 frame:RegisterEvent("SPELLS_CHANGED")
+RegisterNativeCombatEvents(frame)
 local rawOK = pcall(function() frame:RegisterEvent("RAW_COMBATLOG") end)
 if rawOK then rawCombatLogRegistered = 1 end
 
@@ -1209,9 +1529,11 @@ frame:SetScript("OnEvent", function()
     EnsureDB()
     InstallErrorCapture()
     DebugLog("INIT", "loaded version=" .. VERSION)
+    local patternCount, patternTotal = CountNativePatterns()
     DebugLog("INIT", "native nameplate scanner enabled; UnitNameplate=" .. tostring(UnitNameplate and 1 or nil) .. " UnitGUID=" .. tostring(UnitGUID and 1 or nil) .. " RAW_COMBATLOG=" .. tostring(rawCombatLogRegistered))
+    DebugLog("INIT", "native combat events=" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " patterns=" .. tostring(patternCount) .. "/" .. tostring(patternTotal) .. " selected=" .. tostring(nativeCombatBackendAvailable and "native" or (rawCombatLogRegistered and "raw" or "none")))
     RebuildSpellTextureCache()
-    Chat("loaded " .. VERSION .. ". Native nameplate detection is active. Type /np status.")
+    Chat("loaded " .. VERSION .. ". Native nameplate and combat-event backends are active. Type /np status.")
   elseif event == "SPELLS_CHANGED" then
     RebuildSpellTextureCache()
   elseif event == "PLAYER_ENTERING_WORLD" then
@@ -1222,6 +1544,8 @@ frame:SetScript("OnEvent", function()
   elseif event == "PLAYER_TARGET_CHANGED" then
     NSCT:ScanNameplates(1)
     DebugLog("TARGET", "name=" .. tostring(UnitName("target")) .. " guid=" .. tostring(GetGUID("target")))
+  elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_COMBAT_SELF_MISSES" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" then
+    NSCT:HandleNativeCombatEvent(event, arg1)
   elseif event == "RAW_COMBATLOG" then
     NSCT:HandleRawCombatLog(arg1, arg2)
   end

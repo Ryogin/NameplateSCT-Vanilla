@@ -1,26 +1,26 @@
-NameplateSCT-Vanilla v0.4.2a
+NameplateSCT-Vanilla v0.4.3-test
 
 TESTING.md is the canonical test matrix for the current build.
 
-Quick native-backend smoke test:
+Quick native-combat smoke test:
 1. Enable enemy nameplates.
-2. Target a visible enemy.
+2. /np clear
 3. /np status
-4. /np test
-5. /np crit
-6. Move out of nameplate range and back in.
-7. /np errors
-8. Confirm no immediate "plate disappeared" after /np test or /np crit.
-9. /np clear (or /np clearlog) before a fresh capture.
-10. If anything looks wrong: /np dump 50
+4. Confirm "native combat backend: active (5/5 events)" if possible.
+5. Target one visible enemy.
+6. Perform several white attacks and at least one ability/spell.
+7. If available, test a crit, miss/dodge/parry/resist, and a DoT tick.
+8. /np errors
+9. /np dump 50
 
-v0.4.2a focus:
-- native WorldFrame nameplate detection without requiring GUID APIs
-- OnShow / OnHide lifecycle tracking
-- native name indexing and target resolution
-- optional exact GUID resolution when available
-- no guessing for ambiguous same-named mobs
-- native-resolution texts remain attached even when an auxiliary GUID exists
-- independent capability reporting in /np status
-- /np clear and /np clearlog diagnostics reset
-- existing fountain/critical movement intentionally unchanged
+Expected log flow:
+[NATIVELOG] -> [PARSED] -> [DISPLAY]
+
+Any [UNMATCHED] entry is useful parser test data and should be preserved exactly.
+
+v0.4.3-test focus:
+- native Vanilla CHAT_MSG_* outgoing-combat parsing
+- localized parsing from Blizzard global combat strings
+- normalized autoattack / ability / spell / periodic / miss events
+- no duplicate SCT when RAW_COMBATLOG is also present
+- existing native nameplate resolution and animations remain unchanged

@@ -2,95 +2,160 @@
 
 ## Current build
 
-`0.4.2a`
+`0.4.3-test`
 
-Primary goal: verify native Vanilla nameplate discovery and confirm that native target/name resolutions remain attached for their full animation even when the client exposes an auxiliary GUID.
+Primary goal: validate the native Vanilla outgoing-combat parser against real 1.12.1 combat messages while preserving the already validated native nameplate backend.
 
-## Native Vanilla baseline — highest priority
+## Clean-session preparation
 
-Run this test in a WoW 1.12.1 environment where `UnitNameplate`, `UnitGUID`, and `RAW_COMBATLOG` are not available if possible.
+Before each focused capture:
 
-1. Enable enemy nameplates.
-2. Target a visible enemy.
-3. Run `/np status`.
-4. Confirm `native scanner: active` and that `visible` / `named` are greater than zero.
-5. Note the independent capability report for `UnitExists GUID`, `UnitGUID API`, `UnitNameplate API`, and `RAW_COMBATLOG`.
-6. Run `/np test`.
-7. Run `/np crit`.
-8. Run `/np errors`.
-9. Run `/np clear` (or `/np clearlog`) and confirm the saved diagnostic log/error lists reset.
+```text
+/np clear
+/np status
+```
 
 Expected:
 
-- Both synthetic texts appear on the current target's native nameplate without requiring exact GUID-to-nameplate resolution.
-- Neither test logs `plate disappeared` immediately after `DISPLAY` while the target plate is still visible.
-- The normal fountain and critical vertical/POW animations are unchanged.
-- No Lua errors occur because `RAW_COMBATLOG` is unavailable.
+- `native combat backend: active (5/5 events)` on a normal Vanilla 1.12.1 client.
+- `display backend: native CHAT_MSG` when the native backend is complete.
+- `RAW_COMBATLOG` may also report as registered, but it must not create duplicate floating text while the native backend is active.
 
-## Native nameplate lifecycle
+## Native combat parser — highest priority
 
-1. Stand where one enemy nameplate is visible.
-2. Run `/np status`.
-3. Move far enough away that the plate disappears.
-4. Move back until it appears again.
-5. Repeat several times and with several nearby units.
-6. Run `/np dump 50`.
+Use one visible target at a time where practical. After each group of tests, run `/np dump 50` and `/np errors`.
+
+### White melee hit
+
+1. Autoattack an enemy until a normal white hit occurs.
 
 Expected:
 
-- `PLATESHOW` and `PLATEHIDE` entries appear for registered frames.
-- Hidden plates are removed from the visible name index.
-- A reshown/recycled frame is treated as a new visibility generation.
-- Existing floating text does not jump to the newly shown unit.
+- One floating damage number.
+- `[NATIVELOG]` for `CHAT_MSG_COMBAT_SELF_HITS`.
+- `[PARSED] ... type=autoattack` with the target name and amount.
+- A single `[DISPLAY]` entry for that hit.
 
-## Same-name safety
+### White melee critical
 
-1. Find two or more visible enemies with the same name.
-2. Target one of them.
-3. Run `/np test` several times while switching between them.
-4. Deselect the target if practical and inspect `/np status`.
+1. Continue autoattacking until a white critical occurs if practical.
 
 Expected:
 
-- Target resolution uses the target plate when Vanilla's target alpha state identifies it uniquely.
-- A unique visible name can be resolved when only one matching plate exists.
-- Multiple ambiguous same-named plates are not guessed by the generic name resolver.
+- Critical vertical/POW animation remains unchanged.
+- `[PARSED] ... type=autoattack ... crit=1`.
 
-## Enhanced GUID regression
+### Physical ability
 
-If the client exposes compatible GUID/nameplate APIs:
-
-1. Target a visible enemy.
-2. Run `/np status` and confirm GUID resolution is available.
-3. Run `/np test` and `/np crit`.
-4. Fight several enemies and force native frames to recycle.
-5. Kill one unit and immediately engage another.
+Use a physical ability that appears in the combat log as an ability hit (for example an applicable melee class ability).
 
 Expected:
 
-- Exact GUID resolution continues to work.
-- Forward/reverse GUID mappings remain consistent.
-- No combat text migrates to a recycled frame belonging to another GUID.
+- `[PARSED] ... type=ability`.
+- Spell/ability name captured.
+- Physical color.
+- Spell icon shown when the spellbook cache can resolve it.
 
-## Killing-blow / disappearing-plate regression
+### Spell damage
 
-1. Create combat text on a low-health target.
-2. Cause its nameplate to disappear while the text is still active.
+Use a direct spell with an explicit damage school.
 
 Expected:
 
-- Existing text continues from its last valid WorldFrame position.
-- Once detached, it does not reattach to a later visibility generation of the same frame.
+- `[PARSED] ... type=spell`.
+- `school` normalized to `Holy`, `Fire`, `Nature`, `Frost`, `Shadow`, or `Arcane` when the client exposes the corresponding Blizzard school global.
+- Appropriate school color.
+- Critical spell hits retain POW behavior.
 
-## Current automatic combat-parser boundary
+### Periodic damage
 
-The automatic parser in `0.4.2a` still consumes `RAW_COMBATLOG` only when that event exists.
+Apply a player-owned DoT and allow it to tick.
 
-Expected on a stock Vanilla environment:
+Expected:
 
-- Native nameplate discovery and `/np test` / `/np crit` work.
-- Absence of `RAW_COMBATLOG` produces no Lua registration error.
-- Real outgoing combat text without that event is not yet expected; native `CHAT_MSG_*` parsing is the next development step.
+- Event comes from `CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE` or `CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE`.
+- `[PARSED] ... periodic=1`.
+- DoT spell name and damage school captured when present.
+- Periodic events do not blindly prefer a same-named current target when the destination is ambiguous.
+
+## Miss / avoidance matrix
+
+Capture as many as practical:
+
+```text
+MISS
+DODGE
+PARRY
+BLOCK
+RESIST
+ABSORB
+IMMUNE
+REFLECT
+EVADE
+```
+
+Expected:
+
+- The matching outcome appears as miss-style combat text.
+- `[PARSED]` includes `text=<OUTCOME>`.
+- No Lua errors occur when a corresponding Blizzard global string is absent; unsupported formats should become `[UNMATCHED]` rather than breaking execution.
+
+## Unmatched-message capture
+
+Any outgoing message that produces:
+
+```text
+[UNMATCHED] <event> || <combat message>
+```
+
+is useful test data.
+
+When reporting one, provide:
+
+- `/np status`
+- `/np dump 50`
+- the class and ability involved
+- whether the target was the current target
+- whether more than one visible enemy had the same name
+
+Do not paraphrase the combat message; the exact captured string is what is needed to extend the parser safely.
+
+## Duplicate-output regression
+
+Run this when `/np status` reports both native combat events and `RAW_COMBATLOG`.
+
+1. Clear the log.
+2. Perform 5-10 simple attacks against one target.
+3. Count visible combat numbers relative to actual hits.
+
+Expected:
+
+- One NameplateSCT number per outgoing event, not two.
+- Native `[PARSED]` / `[DISPLAY]` drives visible SCT.
+- RAW may be present for diagnostics/fallback but does not independently display the same hit while native mode is active.
+
+## Native nameplate regression
+
+Repeat the validated `0.4.2a` checks:
+
+1. `/np test`
+2. `/np crit`
+3. Move out of nameplate range and back in.
+4. Switch between same-named mobs.
+
+Expected:
+
+- No immediate `plate disappeared` after synthetic display while the plate remains visible.
+- Text never jumps to a recycled frame.
+- Ambiguous generic same-name resolution is not guessed.
+
+## Optional GUID regression
+
+If the client provides auxiliary GUIDs:
+
+- target GUID may be attached to a parsed native event when the combat-message target name equals the current target name;
+- exact GUID resolution remains preferred when a reliable GUID-to-nameplate mapping exists;
+- native target/name resolution remains valid even when an auxiliary target GUID is available but cannot be mapped directly to a plate.
 
 ## Diagnostics
 
@@ -99,17 +164,29 @@ Expected on a stock Vanilla environment:
 /np plates
 /np dump 50
 /np errors
+/np clear
+/np clearlog
 ```
 
-If resolution fails, capture:
+Important log tags in `0.4.3-test`:
 
-- `/np status`
-- `/np dump 50`
-- target name
-- number of visible mobs with that same name
-- whether the client exposes an enhanced GUID/nameplate API
+```text
+[NATIVELOG]  raw native CHAT_MSG_* payload
+[PARSED]     normalized outgoing event
+[UNMATCHED]  native combat string not yet recognized
+[DISPLAY]    resolved nameplate and rendered text
+[RAW]        optional RAW_COMBATLOG diagnostic/fallback input
+```
 
 ## Version history relevant to current testing
+
+### 0.4.3-test
+
+- Native outgoing `CHAT_MSG_*` combat backend.
+- Blizzard global-string pattern compiler for localized parsing.
+- Normalized autoattack / ability / spell / periodic / miss data.
+- Native backend preferred over RAW display to prevent duplicate SCT.
+- `[UNMATCHED]` logging for parser expansion.
 
 ### 0.4.2a
 
@@ -128,11 +205,3 @@ If resolution fails, capture:
 - Target and unique-name resolution without GUIDs.
 - Strict optional GUID validation.
 - Visibility-generation protection for recycled native frames.
-- Safe optional registration of `RAW_COMBATLOG`.
-
-### 0.4.1a
-
-- Bidirectional GUID/nameplate cache.
-- Recycled native-frame cleanup.
-- Cached active-text plate references.
-- Detached text no longer attempts further nameplate resolution.

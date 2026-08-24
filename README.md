@@ -4,17 +4,16 @@ A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/Nameplat
 
 The project keeps the core idea of displaying scrolling combat text on enemy nameplates while using a lightweight implementation designed around the Vanilla 1.12 API.
 
-> **Current status:** `0.4.2a` — development build.
+> **Current status:** `0.4.3-test` — development build.
 
 ## Requirements
 
 - World of Warcraft 1.12.1 compatible client
 - Enemy nameplates enabled for normal use
-- English combat-log strings are currently assumed by the implemented combat parser
 
-No Ace3, LibEasing, LibSharedMedia, Masque, or replacement-nameplate addon is required.
+No Ace3, LibEasing, LibSharedMedia, Masque, replacement-nameplate addon, or enhanced GUID API is required for the native backend.
 
-Enhanced GUID/nameplate APIs are optional. When present, NameplateSCT-Vanilla uses them automatically for exact unit resolution; native nameplate discovery itself does not require them.
+Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla uses them automatically for more exact unit resolution.
 
 ## Features currently implemented
 
@@ -23,9 +22,14 @@ Enhanced GUID/nameplate APIs are optional. When present, NameplateSCT-Vanilla us
 - Native unit-name indexing from Blizzard nameplate FontStrings
 - Target-nameplate resolution without requiring a GUID
 - Unique visible-name fallback when the destination is unambiguous
-- Optional exact GUID-to-nameplate resolution when compatible enhanced APIs are available
+- Optional exact GUID-to-nameplate resolution when compatible APIs are available
 - Bidirectional GUID/nameplate tracking with recycled-frame cleanup
 - Visibility-generation protection so active text cannot jump onto a recycled frame
+- Native Vanilla outgoing-combat parsing through `CHAT_MSG_*` events
+- Localized combat parsing based on Blizzard global combat strings instead of hard-coded English sentences
+- Normalized outgoing event data for autoattacks, abilities, spells, criticals, periodic damage, and miss outcomes
+- Native parsing for MISS, DODGE, PARRY, BLOCK, RESIST, ABSORB, IMMUNE, REFLECT, and EVADE where the corresponding Vanilla global string exists
+- RAW_COMBATLOG fallback when the native combat backend is unavailable
 - Normal hit fountain animation
 - Critical hit / miss vertical animation with POW sizing
 - Physical and spell-school colors
@@ -33,36 +37,55 @@ Enhanced GUID/nameplate APIs are optional. When present, NameplateSCT-Vanilla us
 - Continued combat text motion when a unit's nameplate disappears
 - Internal debug/error capture and diagnostic slash commands
 
+## v0.4.3-test
+
+This patch adds the native Vanilla outgoing-combat backend.
+
+- Registers `CHAT_MSG_COMBAT_SELF_HITS` for white hits and white criticals.
+- Registers `CHAT_MSG_COMBAT_SELF_MISSES` for melee miss/avoidance outcomes.
+- Registers `CHAT_MSG_SPELL_SELF_DAMAGE` for abilities, spells, criticals, and spell miss outcomes.
+- Registers `CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE` and `CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE` for player-owned DoTs.
+- Compiles Blizzard's localized global combat strings into Lua search patterns at runtime.
+- Converts parsed combat messages into a normalized internal event structure before display.
+- Uses the existing GUID/target/name nameplate resolver rather than coupling combat parsing to a specific nameplate API.
+- Uses native `CHAT_MSG_*` events as the preferred display backend when all required native events register successfully.
+- Keeps `RAW_COMBATLOG` registered as a fallback and diagnostic source without duplicating displayed combat text.
+- Logs unrecognized outgoing combat strings as `[UNMATCHED]` for targeted parser expansion.
+
+The existing fountain and critical movement remain unchanged.
+
 ## v0.4.2a
 
-This hotfix stabilizes active-text tracking for native nameplate resolutions and improves diagnostics.
+This hotfix stabilized active-text tracking for native nameplate resolutions and improved diagnostics.
 
 - Keeps `target-alpha`, `target-unique-name`, and `unique-name` texts attached to the native frame selected at display time even when an auxiliary GUID is available.
 - Uses exact GUID re-resolution only when the original resolution mode was `guid`.
 - Adds `/np clearlog` as an alias for `/np clear`.
-- Expands `/np status` to report `UnitExists` GUID support, `UnitGUID`, `UnitNameplate`, and `RAW_COMBATLOG` independently.
+- Expands `/np status` to report optional client capabilities independently.
 - Updates addon metadata for the current maintainer.
 
-## v0.4.2-test
+## Compatibility model
 
-This patch introduces the native Vanilla nameplate backend.
+Nameplate discovery and outgoing combat parsing now both have native Vanilla implementations:
 
-- Detects Blizzard nameplate frames from the native `Nameplate-Border` texture.
-- Accepts both native `Frame` and `Button` nameplate frame types.
-- Scans only newly added `WorldFrame` children during normal operation.
-- Hooks discovered nameplates once and tracks their `OnShow` / `OnHide` lifecycle.
-- Reads and indexes the native name FontString for GUID-less resolution.
-- Resolves the current target by exact GUID when available, otherwise by Vanilla target/nameplate state.
-- Resolves a non-target name only when exactly one visible plate has that name.
-- Refuses to guess when multiple same-named plates are ambiguous.
-- Strictly validates enhanced GUID values as `0x...` before accepting them.
-- Keeps the existing fountain and critical animations unchanged.
+```text
+Native WorldFrame nameplates
+        +
+Native CHAT_MSG_* combat events
+        |
+        v
+Normalized outgoing event
+        |
+        v
+GUID / target / unique-name resolver
+        |
+        v
+Nameplate combat text
+```
 
-### Current compatibility boundary
+When optional GUID information is available it improves destination resolution, but it is not required for the native combat parser.
 
-`0.4.2a` retains the GUID-less backend introduced in `0.4.2-test` and removes the GUID requirement from **nameplate discovery and target test rendering**. The existing automatic combat parser still consumes `RAW_COMBATLOG` when a client exposes that event.
-
-A native `CHAT_MSG_*` combat-event backend is planned for the next development step so automatic combat text can also operate without `RAW_COMBATLOG`.
+If all required native `CHAT_MSG_*` events are available, they are the active display backend. `RAW_COMBATLOG`, when available, is retained as fallback/diagnostic input so both systems do not create duplicate floating text.
 
 ## Installation
 
@@ -99,14 +122,17 @@ Enable **NameplateSCT-Vanilla** from the AddOns menu and enable enemy nameplates
 
 `/nsct` is also registered as an alias for `/np`.
 
-For the native backend, the most useful first test is:
+For a clean combat-parser test:
 
-1. Use a standard Vanilla 1.12.1 client environment with no enhanced GUID/nameplate API available.
-2. Enable enemy nameplates.
-3. Target a visible enemy.
-4. Run `/np status` and confirm the native scanner sees visible/named plates.
-5. Run `/np test` and `/np crit`.
-6. Move out of nameplate range and back in, then repeat.
+1. Enable enemy nameplates.
+2. Run `/np clear`.
+3. Run `/np status` and confirm `native combat backend: active`.
+4. Fight one visible enemy using white attacks and one or more abilities/spells.
+5. If possible, cause a critical, miss/dodge/parry/resist, and a periodic damage tick.
+6. Run `/np errors`.
+7. Run `/np dump 50`.
+
+Look for `[PARSED]` entries for supported messages and `[UNMATCHED]` entries for formats that still need coverage.
 
 See [`TESTING.md`](TESTING.md) for the complete test matrix.
 
@@ -114,16 +140,16 @@ See [`TESTING.md`](TESTING.md) for the complete test matrix.
 
 Planned work includes:
 
-- native `CHAT_MSG_*` outgoing-combat parsing
-- a normalized internal combat-event model
+- hardening native combat parsing from real captured logs
 - stronger destination resolution for ambiguous same-named enemies
 - performance and spell-cache cleanup
-- explicit damage-source classification
+- explicit damage-source classification refinements
 - target vs. off-target scaling
 - small-hit scaling
 - spell filtering
 - clutter protection / maximum active texts
 - SavedVariables-backed configuration and slash commands
+- later pet/guardian and partial absorb/block/resist research
 
 The current fountain trajectory is intentional and is not scheduled for replacement.
 
