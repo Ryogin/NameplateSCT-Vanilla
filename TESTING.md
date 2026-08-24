@@ -2,89 +2,93 @@
 
 ## Current build
 
-`0.4.1a`
+`0.4.2-test`
 
-Primary goal: verify that recycled native nameplate frames cannot leave stale GUID mappings and that active combat text remains attached to the correct unit without resolving the plate every frame.
+Primary goal: verify native Vanilla nameplate discovery, lifecycle tracking, name indexing, and target resolution with and without enhanced GUID APIs.
 
-## Baseline checks
+## Native Vanilla baseline — highest priority
 
-1. Log in with SuperWoW active.
-2. Enable enemy nameplates.
-3. Target a visible enemy.
-4. Run `/np status`.
-5. Confirm that SuperWoW is detected and the target has a GUID.
+Run this test in a WoW 1.12.1 environment where `UnitNameplate`, `UnitGUID`, and `RAW_COMBATLOG` are not available if possible.
+
+1. Enable enemy nameplates.
+2. Target a visible enemy.
+3. Run `/np status`.
+4. Confirm `native scanner: active` and that `visible` / `named` are greater than zero.
+5. Confirm `enhanced GUID resolution: not detected` is acceptable.
 6. Run `/np test`.
 7. Run `/np crit`.
 8. Run `/np errors`.
 
 Expected:
 
-- Synthetic normal text appears on the target plate.
-- Synthetic critical text uses the existing vertical/POW animation.
-- No Lua errors are reported.
+- Both synthetic texts appear on the current target's native nameplate without a GUID.
+- The normal fountain and critical vertical/POW animations are unchanged.
+- No Lua errors occur because `RAW_COMBATLOG` is unavailable.
 
-## 0.4.1a recycled-nameplate test
+## Native nameplate lifecycle
 
-This is the main regression test for the patch.
-
-1. Find several nearby enemies that can show nameplates.
-2. Fight or move between them so nameplates repeatedly appear and disappear.
-3. Kill one unit and immediately engage another nearby unit.
-4. Repeat with several mobs of the same name if possible.
-5. Periodically run `/np status`.
-6. Run `/np dump 50` after a suspicious transition.
+1. Stand where one enemy nameplate is visible.
+2. Run `/np status`.
+3. Move far enough away that the plate disappears.
+4. Move back until it appears again.
+5. Repeat several times and with several nearby units.
+6. Run `/np dump 50`.
 
 Expected:
 
-- Damage from the new unit never inherits combat text belonging to the previous unit that used the same native nameplate frame.
-- `GUID mappings` and `reverse mappings` in `/np status` should normally stay consistent.
-- Debug output may contain `PLATEGUID recycled plate ...` entries when frames are reused.
+- `PLATESHOW` and `PLATEHIDE` entries appear for registered frames.
+- Hidden plates are removed from the visible name index.
+- A reshown/recycled frame is treated as a new visibility generation.
+- Existing floating text does not jump to the newly shown unit.
 
-## Killing-blow / disappearing-plate test
+## Same-name safety
 
-1. Damage a low-health enemy with its nameplate visible.
-2. Kill it with a hit that creates combat text.
-3. Watch the text after the nameplate disappears.
-
-Expected:
-
-- Existing floating text continues its motion from the last known plate position.
-- It does not jump to a newly recycled nameplate.
-- Once detached, it should remain detached until it expires.
-
-## Multiple active texts
-
-1. Attack quickly enough to have several damage numbers active simultaneously.
-2. Switch targets while old text is still visible.
-3. Move between multiple visible nameplates.
+1. Find two or more visible enemies with the same name.
+2. Target one of them.
+3. Run `/np test` several times while switching between them.
+4. Deselect the target if practical and inspect `/np status`.
 
 Expected:
 
-- Each active text follows the plate associated with its own GUID.
-- Target switching does not move already-active text to the new target.
-- No obvious animation change from `0.4.0-test`.
+- Target resolution uses the target plate when Vanilla's target alpha state identifies it uniquely.
+- A unique visible name can be resolved when only one matching plate exists.
+- Multiple ambiguous same-named plates are not guessed by the generic name resolver.
 
-## Real combat-log coverage smoke test
+## Enhanced GUID regression
 
-Test as many as are available to your character:
+If the client exposes compatible GUID/nameplate APIs:
 
-- white melee hit
-- white melee crit
-- physical ability hit
-- physical ability crit
-- spell hit
-- spell crit
-- dodge
-- parry
-- block
-- immune
-- absorb
-- reflected damage / Thorns-style event
+1. Target a visible enemy.
+2. Run `/np status` and confirm GUID resolution is available.
+3. Run `/np test` and `/np crit`.
+4. Fight several enemies and force native frames to recycle.
+5. Kill one unit and immediately engage another.
 
 Expected:
 
-- Supported player-owned outgoing events appear on the correct nameplate.
-- Unsupported lines may be ignored, but should not produce Lua errors.
+- Exact GUID resolution continues to work.
+- Forward/reverse GUID mappings remain consistent.
+- No combat text migrates to a recycled frame belonging to another GUID.
+
+## Killing-blow / disappearing-plate regression
+
+1. Create combat text on a low-health target.
+2. Cause its nameplate to disappear while the text is still active.
+
+Expected:
+
+- Existing text continues from its last valid WorldFrame position.
+- Once detached, it does not reattach to a later visibility generation of the same frame.
+
+## Current automatic combat-parser boundary
+
+The automatic parser in `0.4.2-test` still consumes `RAW_COMBATLOG` only when that event exists.
+
+Expected on a stock Vanilla environment:
+
+- Native nameplate discovery and `/np test` / `/np crit` work.
+- Absence of `RAW_COMBATLOG` produces no Lua registration error.
+- Real outgoing combat text without that event is not yet expected; native `CHAT_MSG_*` parsing is the next development step.
 
 ## Diagnostics
 
@@ -95,34 +99,30 @@ Expected:
 /np errors
 ```
 
-If combat text appears over the wrong unit, capture:
+If resolution fails, capture:
 
-- `/np status` output
-- `/np dump 50` output
-- the relevant `RAW_COMBATLOG` line if visible in the debug log
-- what happened immediately before the issue (kill, target switch, plate disappeared, new mob entered range, etc.)
+- `/np status`
+- `/np dump 50`
+- target name
+- number of visible mobs with that same name
+- whether the client exposes an enhanced GUID/nameplate API
 
 ## Version history relevant to current testing
+
+### 0.4.2-test
+
+- Native `WorldFrame` nameplate scanner.
+- `Nameplate-Border` frame detection.
+- `OnShow` / `OnHide` lifecycle hooks.
+- Visible nameplate index by native unit name.
+- Target and unique-name resolution without GUIDs.
+- Strict optional GUID validation.
+- Visibility-generation protection for recycled native frames.
+- Safe optional registration of `RAW_COMBATLOG`.
 
 ### 0.4.1a
 
 - Bidirectional GUID/nameplate cache.
 - Recycled native-frame cleanup.
-- Stale-frame cleanup after full WorldFrame scans.
-- Active text caches its resolved nameplate.
-- Cached plates are trusted only while their reverse GUID mapping still matches.
+- Cached active-text plate references.
 - Detached text no longer attempts further nameplate resolution.
-
-### 0.4.0-test
-
-- Continued floating text after killing-blow plate loss.
-- Maul/physical ability avoidance and related parser work.
-- Judgement spell-icon alias behavior.
-
-### 0.3.9
-
-- Physical ability lines without an explicit school, including critical variants.
-
-### 0.3.8
-
-- `CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF` / reflected school-damage support.

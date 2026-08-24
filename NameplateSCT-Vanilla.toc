@@ -1,8 +1,8 @@
 ## Interface: 11200
 ## Title: NameplateSCT-Vanilla
-## Notes: Vanilla 1.12.1 adaptation of NameplateSCT with SuperWoW nameplate support.
+## Notes: Scrolling combat text anchored to native Vanilla 1.12.1 nameplates.
 ## Author: Vanilla adaptation based on NameplateSCT by mpstark & Justwait
-## Version: 0.4.1a
+## Version: 0.4.2-test
 ## SavedVariables: NameplateSCTVanillaDB, NameplateSCTVanillaDebug
 
 NameplateSCT-Vanilla.lua

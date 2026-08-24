@@ -1,11 +1,12 @@
--- NameplateSCT-Vanilla v0.4.1a
--- Diagnostic build for WoW 1.12.1 + SuperWoW.
--- Goal: validate SuperWoW GUID <-> native nameplate <-> combat-log path.
+-- NameplateSCT-Vanilla v0.4.2-test
+-- Development build for WoW 1.12.1.
+-- Native nameplate discovery works without enhanced client APIs; GUID resolution
+-- is used automatically when a compatible client exposes it.
 
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.4.1a"
+local VERSION = "0.4.2-test"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -13,10 +14,16 @@ local MAX_ERRORS = 50
 local platesByGUID = {}
 local guidByPlate = {}
 local knownPlates = {}
+local visiblePlatesByName = {}
+local plateNameByPlate = {}
+local plateNameRegion = {}
+local plateGeneration = {}
+local hookedPlates = {}
 local fontPool = {}
 local activeTexts = {}
 local scanElapsed = 0
 local initializedChildren = 0
+local rawCombatLogRegistered = nil
 local oldErrorHandler = nil
 local inErrorHandler = nil
 local playerGUID = nil
@@ -84,36 +91,122 @@ local function InstallErrorCapture()
   DebugLog("ERRORCAP", "global Lua error capture installed")
 end
 
+local function IsGUID(value)
+  if type(value) ~= "string" then return nil end
+  if string.find(value, "^0x[%x]+$") then return 1 end
+  return nil
+end
+
 local function GetGUID(unit)
-  if not UnitExists or not unit then return nil end
-  local exists, guid = UnitExists(unit)
-  if exists and guid then return guid end
+  if not unit then return nil end
+
+  -- Some 1.12-compatible clients expose UnitGUID directly.
+  if UnitGUID then
+    local ok, guid = pcall(UnitGUID, unit)
+    if ok and IsGUID(guid) then return guid end
+  end
+
+  -- Other enhanced 1.12 clients return a GUID as UnitExists' second value.
+  -- Stock Vanilla only returns the existence flag, so this safely falls back.
+  if UnitExists then
+    local ok, exists, guid = pcall(UnitExists, unit)
+    if ok and exists and IsGUID(guid) then return guid end
+  end
+  return nil
+end
+
+local function CheckRegionForNameplateBorder(region)
+  if region and region.GetObjectType and region.GetTexture and region:GetObjectType() == "Texture" then
+    return region:GetTexture() == "Interface\\Tooltips\\Nameplate-Border"
+  end
   return nil
 end
 
 local function IsNamePlate(frame)
   if not frame or not frame.GetObjectType then return nil end
-  if frame:GetObjectType() ~= "Button" then return nil end
+  local objectType = frame:GetObjectType()
+  if objectType ~= "Frame" and objectType ~= "Button" then return nil end
 
-  local regions = { frame:GetRegions() }
+  -- Vanilla's native nameplate has this border texture among its first regions.
+  -- Avoid allocating a temporary regions table on every scan.
+  local r1, r2, r3, r4, r5, r6 = frame:GetRegions()
+  if CheckRegionForNameplateBorder(r1) then return 1 end
+  if CheckRegionForNameplateBorder(r2) then return 1 end
+  if CheckRegionForNameplateBorder(r3) then return 1 end
+  if CheckRegionForNameplateBorder(r4) then return 1 end
+  if CheckRegionForNameplateBorder(r5) then return 1 end
+  if CheckRegionForNameplateBorder(r6) then return 1 end
+  return nil
+end
+
+local function PlateGUID(plate)
+  if not plate or not plate.GetName then return nil end
+  -- Enhanced clients may expose the represented unit GUID through GetName(1).
+  -- Stock Vanilla may simply ignore the extra argument, so validate the result
+  -- strictly before treating it as an identity.
+  local ok, guid = pcall(function() return plate:GetName(1) end)
+  if ok and IsGUID(guid) then return guid end
+  return nil
+end
+
+local function FindPlateNameRegion(plate)
+  if not plate then return nil end
+  local cached = plateNameRegion[plate]
+  if cached then return cached end
+
+  local r1, r2, r3, r4, r5, r6 = plate:GetRegions()
+  -- Native 1.12 nameplates normally expose the unit name as region 3.
+  if r3 and r3.GetObjectType and r3:GetObjectType() == "FontString" and r3.GetText then
+    plateNameRegion[plate] = r3
+    return r3
+  end
+
+  -- Conservative fallback for clients/addons that preserve the native border
+  -- but alter region order. Prefer a non-empty, non-level FontString.
+  local regions = { r1, r2, r3, r4, r5, r6 }
   local i
   for i = 1, table.getn(regions) do
     local region = regions[i]
-    if region and region.GetObjectType and region.GetTexture and region:GetObjectType() == "Texture" then
-      if region:GetTexture() == "Interface\\Tooltips\\Nameplate-Border" then
-        return 1
+    if region and region.GetObjectType and region:GetObjectType() == "FontString" and region.GetText then
+      local text = region:GetText()
+      if text and text ~= "" and text ~= "??" and not string.find(text, "^%d+$") then
+        plateNameRegion[plate] = region
+        return region
       end
     end
   end
   return nil
 end
 
-local function PlateGUID(plate)
-  if not plate or not plate.GetName then return nil end
-  -- SuperWoW extension: frame:GetName(1) returns the unit GUID for nameplates.
-  local ok, guid = pcall(function() return plate:GetName(1) end)
-  if ok and guid and guid ~= "" then return guid end
+local function ReadPlateName(plate)
+  local region = FindPlateNameRegion(plate)
+  if not region or not region.GetText then return nil end
+  local name = region:GetText()
+  if name and name ~= "" then return name end
   return nil
+end
+
+local function RemovePlateNameIndex(plate)
+  local oldName = plateNameByPlate[plate]
+  if not oldName then return end
+  local set = visiblePlatesByName[oldName]
+  if set then
+    set[plate] = nil
+    if not next(set) then visiblePlatesByName[oldName] = nil end
+  end
+  plateNameByPlate[plate] = nil
+end
+
+local function IndexPlateName(plate, name)
+  if not plate then return end
+  local oldName = plateNameByPlate[plate]
+  if oldName == name then return end
+  if oldName then RemovePlateNameIndex(plate) end
+  if not name or name == "" then return end
+
+  if not visiblePlatesByName[name] then visiblePlatesByName[name] = {} end
+  visiblePlatesByName[name][plate] = 1
+  plateNameByPlate[plate] = name
 end
 
 local function UnbindPlate(plate)
@@ -150,58 +243,121 @@ local function BindPlateGUID(plate, guid)
   guidByPlate[plate] = guid
 end
 
-function NSCT:ScanNameplates(force)
-  if not WorldFrame then return end
-  local count = WorldFrame:GetNumChildren() or 0
-  if not force and count == initializedChildren then
-    -- Refresh GUIDs even when the child count is stable. Native nameplate frames
-    -- are recycled between units, so both forward and reverse mappings must be
-    -- refreshed and old associations explicitly removed.
-    local plate
-    for plate in pairs(knownPlates) do
-      BindPlateGUID(plate, PlateGUID(plate))
-    end
+local function RefreshPlateIdentity(plate)
+  if not plate then return end
+  knownPlates[plate] = 1
+
+  if not plate.IsShown or not plate:IsShown() then
+    RemovePlateNameIndex(plate)
+    UnbindPlate(plate)
     return
   end
 
-  local children = { WorldFrame:GetChildren() }
-  local refreshedPlates = {}
-  local found = 0
-  local i
-  for i = 1, table.getn(children) do
-    local plate = children[i]
-    if IsNamePlate(plate) then
-      refreshedPlates[plate] = 1
-      found = found + 1
-      BindPlateGUID(plate, PlateGUID(plate))
+  IndexPlateName(plate, ReadPlateName(plate))
+
+  local guid = PlateGUID(plate)
+  if guid then
+    BindPlateGUID(plate, guid)
+  elseif guidByPlate[plate] then
+    -- A recycled/reshown frame without a currently valid GUID must never retain
+    -- the previous unit's enhanced identity.
+    UnbindPlate(plate)
+  end
+end
+
+local function HookFrameScript(frame, scriptName, callback)
+  if not frame or not frame.GetScript or not frame.SetScript then return end
+  local previous = frame:GetScript(scriptName)
+  frame:SetScript(scriptName, function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+    if previous then previous(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
+    callback(frame)
+  end)
+end
+
+local function OnNativePlateShow(plate)
+  plateGeneration[plate] = (plateGeneration[plate] or 0) + 1
+  -- Clear any identity from the previous visibility cycle before reading the
+  -- frame again. The periodic refresh will pick up name text if Blizzard fills
+  -- it a moment after OnShow.
+  RemovePlateNameIndex(plate)
+  UnbindPlate(plate)
+  RefreshPlateIdentity(plate)
+  DebugLog("PLATESHOW", "name=" .. tostring(plateNameByPlate[plate]) .. " guid=" .. tostring(guidByPlate[plate]))
+end
+
+local function OnNativePlateHide(plate)
+  plateGeneration[plate] = (plateGeneration[plate] or 0) + 1
+  DebugLog("PLATEHIDE", "name=" .. tostring(plateNameByPlate[plate]) .. " guid=" .. tostring(guidByPlate[plate]))
+  RemovePlateNameIndex(plate)
+  UnbindPlate(plate)
+end
+
+local function RegisterNativePlate(plate)
+  if not plate then return end
+  knownPlates[plate] = 1
+  if not plateGeneration[plate] then plateGeneration[plate] = 1 end
+
+  if not hookedPlates[plate] then
+    hookedPlates[plate] = 1
+    HookFrameScript(plate, "OnShow", OnNativePlateShow)
+    HookFrameScript(plate, "OnHide", OnNativePlateHide)
+    DebugLog("PLATEREG", "registered native nameplate frame")
+  end
+
+  RefreshPlateIdentity(plate)
+end
+
+local function ResetNameplateIdentity()
+  platesByGUID = {}
+  guidByPlate = {}
+  visiblePlatesByName = {}
+  plateNameByPlate = {}
+  knownPlates = {}
+  initializedChildren = 0
+end
+
+function NSCT:ScanNameplates(force)
+  if not WorldFrame then return end
+  local count = WorldFrame:GetNumChildren() or 0
+
+  -- WorldFrame children are normally appended. If a zone/client transition ever
+  -- reduces the count, restart discovery rather than trusting the old index.
+  if count < initializedChildren then initializedChildren = 0 end
+
+  if force or count > initializedChildren then
+    local children = { WorldFrame:GetChildren() }
+    local first = force and 1 or (initializedChildren + 1)
+    local found = 0
+    local i
+    for i = first, count do
+      local plate = children[i]
+      if IsNamePlate(plate) then
+        RegisterNativePlate(plate)
+        found = found + 1
+      end
+    end
+    initializedChildren = count
+    if found > 0 or force then
+      DebugLog("PLATES", "worldChildren=" .. tostring(count) .. " newNativePlates=" .. tostring(found) .. " force=" .. tostring(force and 1 or 0))
     end
   end
 
-  -- Remove mappings for frames that are no longer present among WorldFrame's
-  -- nameplate children. This also prevents an old GUID from retaining a stale
-  -- frame reference indefinitely.
+  -- This does not rescan WorldFrame. It only refreshes the small registry of
+  -- already discovered plates so delayed name text and optional GUIDs stay current.
   local plate
   for plate in pairs(knownPlates) do
-    if not refreshedPlates[plate] then
-      UnbindPlate(plate)
-    end
+    RefreshPlateIdentity(plate)
   end
-  knownPlates = refreshedPlates
-
-  initializedChildren = count
-  DebugLog("PLATES", "scan children=" .. tostring(count) .. " plates=" .. tostring(found))
 end
 
 function NSCT:GetNameplate(guid)
-  if not guid then return nil end
+  if not IsGUID(guid) then return nil end
 
-  -- Prefer SuperWoW's direct function if the installed build exposes it. Any
-  -- successful result is also fed into our bidirectional cache so active text
-  -- can reuse the frame without resolving it again every OnUpdate.
+  -- Prefer a direct GUID -> nameplate API when the client exposes one.
   if UnitNameplate then
     local ok, plate = pcall(UnitNameplate, guid)
-    if ok and plate then
-      knownPlates[plate] = 1
+    if ok and plate and IsNamePlate(plate) then
+      RegisterNativePlate(plate)
       BindPlateGUID(plate, guid)
       return plate
     end
@@ -217,6 +373,79 @@ function NSCT:GetNameplate(guid)
   if plate and guidByPlate[plate] == guid and plate.IsShown and plate:IsShown() then
     return plate
   end
+  return nil
+end
+
+function NSCT:GetNameplateByName(name)
+  if not name or name == "" then return nil end
+  local set = visiblePlatesByName[name]
+  if not set then return nil end
+
+  local found = nil
+  local count = 0
+  local plate
+  for plate in pairs(set) do
+    if plate.IsShown and plate:IsShown() and plateNameByPlate[plate] == name then
+      count = count + 1
+      found = plate
+      if count > 1 then return nil end
+    end
+  end
+  if count == 1 then return found end
+  return nil
+end
+
+function NSCT:GetTargetNameplate()
+  local targetName = UnitName and UnitName("target") or nil
+  if not targetName then return nil end
+
+  local targetGUID = GetGUID("target")
+  if targetGUID then
+    local exact = self:GetNameplate(targetGUID)
+    if exact then return exact, "guid" end
+  end
+
+  self:ScanNameplates(nil)
+  local set = visiblePlatesByName[targetName]
+  if not set then return nil end
+
+  local highAlpha = nil
+  local highCount = 0
+  local only = nil
+  local total = 0
+  local plate
+  for plate in pairs(set) do
+    if plate.IsShown and plate:IsShown() and plateNameByPlate[plate] == targetName then
+      total = total + 1
+      only = plate
+      if plate.GetAlpha and plate:GetAlpha() > 0.9 then
+        highCount = highCount + 1
+        highAlpha = plate
+      end
+    end
+  end
+
+  if highCount == 1 then return highAlpha, "target-alpha" end
+  if total == 1 then return only, "target-unique-name" end
+  return nil
+end
+
+function NSCT:ResolveNameplate(guid, name, preferTarget)
+  if guid then
+    local exact = self:GetNameplate(guid)
+    if exact then return exact, "guid" end
+  end
+
+  if name and preferTarget and UnitName and UnitName("target") == name then
+    local targetPlate, mode = self:GetTargetNameplate()
+    if targetPlate then return targetPlate, mode end
+  end
+
+  if name then
+    local unique = self:GetNameplateByName(name)
+    if unique then return unique, "unique-name" end
+  end
+
   return nil
 end
 
@@ -348,6 +577,9 @@ local function ReleaseFontString(fs)
   fs.holder:Hide()
   fs.guid = nil
   fs.plate = nil
+  fs.plateName = nil
+  fs.plateGeneration = nil
+  fs.resolutionMode = nil
   fs.started = nil
   fs.duration = nil
   fs.animation = nil
@@ -366,12 +598,8 @@ local function ReleaseFontString(fs)
   table.insert(fontPool, fs)
 end
 
-function NSCT:Display(guid, text, info)
-  local plate = self:GetNameplate(guid)
-  if not plate then
-    DebugLog("DISPLAY", "no nameplate for guid=" .. tostring(guid) .. " text=" .. tostring(text))
-    return nil
-  end
+local function DisplayOnPlate(plate, guid, text, info, resolutionMode)
+  if not plate then return nil end
 
   local fs = AcquireFontString(plate)
   info = info or {}
@@ -419,8 +647,11 @@ function NSCT:Display(guid, text, info)
     fs.icon:Show()
   end
 
-  fs.guid = guid
+  fs.guid = IsGUID(guid) and guid or nil
   fs.plate = plate
+  fs.plateName = plateNameByPlate[plate] or ReadPlateName(plate)
+  fs.plateGeneration = plateGeneration[plate] or 0
+  fs.resolutionMode = resolutionMode or (fs.guid and "guid" or "native")
   fs.started = GetTime()
   -- Preserve a WorldFrame-relative position in case this is a killing blow
   -- and the native plate disappears before the next OnUpdate.
@@ -444,8 +675,26 @@ function NSCT:Display(guid, text, info)
   end
 
   table.insert(activeTexts, fs)
-  DebugLog("DISPLAY", "guid=" .. tostring(guid) .. " text=" .. tostring(text) .. " kind=" .. tostring(info.kind) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " pow=" .. tostring(fs.pow) .. " icon=" .. tostring(texture) .. " height=" .. tostring(size) .. " popStart=" .. tostring(fs.popStartHeight))
+  DebugLog("DISPLAY", "mode=" .. tostring(fs.resolutionMode) .. " guid=" .. tostring(fs.guid) .. " name=" .. tostring(fs.plateName) .. " text=" .. tostring(text) .. " kind=" .. tostring(info.kind) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " pow=" .. tostring(fs.pow) .. " icon=" .. tostring(texture) .. " height=" .. tostring(size) .. " popStart=" .. tostring(fs.popStartHeight))
   return 1
+end
+
+function NSCT:Display(guid, text, info)
+  local plate = self:GetNameplate(guid)
+  if not plate then
+    DebugLog("DISPLAY", "no nameplate for guid=" .. tostring(guid) .. " text=" .. tostring(text))
+    return nil
+  end
+  return DisplayOnPlate(plate, guid, text, info, "guid")
+end
+
+function NSCT:DisplayResolved(guid, name, text, info, preferTarget)
+  local plate, mode = self:ResolveNameplate(guid, name, preferTarget)
+  if not plate then
+    DebugLog("DISPLAY", "unresolved destination guid=" .. tostring(guid) .. " name=" .. tostring(name) .. " text=" .. tostring(text))
+    return nil
+  end
+  return DisplayOnPlate(plate, guid, text, info, mode)
 end
 
 local function UpdateTexts()
@@ -477,11 +726,22 @@ local function UpdateTexts()
         -- frame, so a cached frame is only trusted while its reverse mapping still
         -- belongs to this combat text's GUID.
         local cachedPlate = fs.plate
-        if cachedPlate and guidByPlate[cachedPlate] == fs.guid and cachedPlate.IsShown and cachedPlate:IsShown() then
-          plate = cachedPlate
-        else
-          plate = NSCT:GetNameplate(fs.guid)
-          fs.plate = plate
+        local generationMatches = cachedPlate and (plateGeneration[cachedPlate] or 0) == (fs.plateGeneration or 0)
+        if fs.guid then
+          if cachedPlate and generationMatches and guidByPlate[cachedPlate] == fs.guid and cachedPlate.IsShown and cachedPlate:IsShown() then
+            plate = cachedPlate
+          else
+            plate = NSCT:GetNameplate(fs.guid)
+            fs.plate = plate
+            if plate then fs.plateGeneration = plateGeneration[plate] or 0 end
+          end
+        elseif cachedPlate and generationMatches and cachedPlate.IsShown and cachedPlate:IsShown() then
+          -- Native-only resolution is deliberately sticky: once a text is bound
+          -- to a frame, never jump it to another same-named mob. If this plate
+          -- enters a new visibility generation, detach the text instead.
+          if not fs.plateName or plateNameByPlate[cachedPlate] == fs.plateName then
+            plate = cachedPlate
+          end
         end
       end
 
@@ -499,7 +759,7 @@ local function UpdateTexts()
         if not fs.detached then
           fs.detached = 1
           fs.plate = nil
-          DebugLog("DISPLAY", "plate disappeared; continuing text guid=" .. tostring(fs.guid))
+          DebugLog("DISPLAY", "plate disappeared; continuing text guid=" .. tostring(fs.guid) .. " name=" .. tostring(fs.plateName))
         end
       end
 
@@ -549,7 +809,7 @@ local function UpdateTexts()
   end
 end
 
--- Parser for English RAW_COMBATLOG strings from WoW 1.12.1 with SuperWoW.
+-- Parser for English RAW_COMBATLOG strings when an enhanced 1.12 client exposes that event.
 -- It deliberately matches only player-owned
 -- outgoing damage/misses, so party members' hits are ignored.
 local function ParseOutgoing(rawText)
@@ -581,7 +841,7 @@ local function ParseOutgoing(rawText)
   if guid then return { guid=guid, amount=tonumber(amount), kind="periodic", school=school, spell=spell, critical=nil } end
 
   -- Player-owned damage shields / reflected damage, e.g. Thorns.
-  -- SuperWoW RAW_COMBATLOG does not include the originating aura name here,
+  -- This RAW_COMBATLOG format does not include the originating aura name here,
   -- only the school and reflected amount, so intentionally leave spell=nil.
   _, _, amount, school, guid = string.find(rawText, "^You reflect (%d+) ([%a]+) damage to (0x[%x]+)%.")
   if guid then return { guid=guid, amount=tonumber(amount), kind="damage", school=school, spell=nil, critical=nil, reflected=1 } end
@@ -628,49 +888,69 @@ function NSCT:HandleRawCombatLog(originalEvent, rawText)
 end
 
 function NSCT:PrintStatus()
-  local super = SUPERWOW_VERSION or SUPERWOW_STRING or "NOT DETECTED"
+  self:ScanNameplates(nil)
   local plateCount = 0
+  local visibleCount = 0
+  local namedCount = 0
   local guidCount = 0
   local reverseCount = 0
   local p
-  for p in pairs(knownPlates) do plateCount = plateCount + 1 end
+  for p in pairs(knownPlates) do
+    plateCount = plateCount + 1
+    if p.IsShown and p:IsShown() then visibleCount = visibleCount + 1 end
+  end
+  local name, set
+  for name, set in pairs(visiblePlatesByName) do
+    local plate
+    for plate in pairs(set) do
+      if plate.IsShown and plate:IsShown() then namedCount = namedCount + 1 end
+    end
+  end
   local g
   for g in pairs(platesByGUID) do guidCount = guidCount + 1 end
   for p in pairs(guidByPlate) do reverseCount = reverseCount + 1 end
+  local targetPlate, targetMode = self:GetTargetNameplate()
+
   Chat("version " .. VERSION)
-  Chat("SuperWoW: " .. tostring(super))
-  Chat("UnitNameplate(): " .. (UnitNameplate and "yes" or "no"))
-  Chat("native plates known: " .. tostring(plateCount) .. ", GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
-  Chat("player GUID: " .. tostring(playerGUID))
-  Chat("target GUID: " .. tostring(GetGUID("target")))
+  Chat("native scanner: active; known=" .. tostring(plateCount) .. ", visible=" .. tostring(visibleCount) .. ", named=" .. tostring(namedCount))
+  Chat("enhanced GUID resolution: " .. ((UnitNameplate or UnitGUID or playerGUID) and "available" or "not detected"))
+  Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable"))
+  Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
+  Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
   Chat("debug saved entries: " .. tostring(table.getn(NameplateSCTVanillaDebug.log)) .. ", errors: " .. tostring(table.getn(NameplateSCTVanillaDebug.errors)))
 end
 
 function NSCT:TestTarget()
+  self:ScanNameplates(1)
   local guid = GetGUID("target")
-  if not guid then
-    Chat("No target GUID. Target a unit with its nameplate visible.")
+  local name = UnitName and UnitName("target") or nil
+  if not name then
+    Chat("No target. Target a unit with its native nameplate visible.")
     return
   end
-  self:ScanNameplates(1)
-  if self:Display(guid, "TEST 123", { kind="damage" }) then
-    Chat("Test text sent to target nameplate (GUID " .. tostring(guid) .. ").")
+
+  local plate, mode = self:ResolveNameplate(guid, name, 1)
+  if plate and DisplayOnPlate(plate, guid, "TEST 123", { kind="damage" }, mode) then
+    Chat("Test text sent to target nameplate using " .. tostring(mode) .. " resolution.")
   else
-    Chat("Target GUID exists, but its nameplate frame was not resolved. Use /np status and /np dump.")
+    Chat("Target nameplate was not resolved. Show its nameplate, then use /np status and /np dump 50.")
   end
 end
 
 function NSCT:TestCritTarget()
+  self:ScanNameplates(1)
   local guid = GetGUID("target")
-  if not guid then
-    Chat("No target GUID. Target a unit with its nameplate visible.")
+  local name = UnitName and UnitName("target") or nil
+  if not name then
+    Chat("No target. Target a unit with its native nameplate visible.")
     return
   end
-  self:ScanNameplates(1)
-  if self:Display(guid, "CRIT 999", { kind="damage", school="Physical", critical=1 }) then
-    Chat("Synthetic CRIT sent. v0.4.1a: recycled nameplate mappings are cleaned and active text caches its plate safely.")
+
+  local plate, mode = self:ResolveNameplate(guid, name, 1)
+  if plate and DisplayOnPlate(plate, guid, "CRIT 999", { kind="damage", school="Physical", critical=1 }, mode) then
+    Chat("Synthetic CRIT sent using " .. tostring(mode) .. " resolution. Existing movement is unchanged.")
   else
-    Chat("Target GUID exists, but its nameplate frame was not resolved.")
+    Chat("Target nameplate was not resolved.")
   end
 end
 
@@ -908,23 +1188,25 @@ local frame = CreateFrame("Frame", "NameplateSCTVanillaFrame")
 frame:RegisterEvent("VARIABLES_LOADED")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("PLAYER_TARGET_CHANGED")
-frame:RegisterEvent("RAW_COMBATLOG")
 frame:RegisterEvent("SPELLS_CHANGED")
+local rawOK = pcall(function() frame:RegisterEvent("RAW_COMBATLOG") end)
+if rawOK then rawCombatLogRegistered = 1 end
 
 frame:SetScript("OnEvent", function()
   if event == "VARIABLES_LOADED" then
     EnsureDB()
     InstallErrorCapture()
     DebugLog("INIT", "loaded version=" .. VERSION)
-    DebugLog("INIT", "SuperWoW=" .. tostring(SUPERWOW_VERSION or SUPERWOW_STRING or "nil"))
+    DebugLog("INIT", "native nameplate scanner enabled; UnitNameplate=" .. tostring(UnitNameplate and 1 or nil) .. " UnitGUID=" .. tostring(UnitGUID and 1 or nil) .. " RAW_COMBATLOG=" .. tostring(rawCombatLogRegistered))
     RebuildSpellTextureCache()
-    Chat("loaded " .. VERSION .. ". Type /np status. Internal Lua error capture is active.")
+    Chat("loaded " .. VERSION .. ". Native nameplate detection is active. Type /np status.")
   elseif event == "SPELLS_CHANGED" then
     RebuildSpellTextureCache()
   elseif event == "PLAYER_ENTERING_WORLD" then
+    ResetNameplateIdentity()
     playerGUID = GetGUID("player")
     NSCT:ScanNameplates(1)
-    DebugLog("WORLD", "playerGUID=" .. tostring(playerGUID))
+    DebugLog("WORLD", "playerGUID=" .. tostring(playerGUID) .. " native scanner reset")
   elseif event == "PLAYER_TARGET_CHANGED" then
     NSCT:ScanNameplates(1)
     DebugLog("TARGET", "name=" .. tostring(UnitName("target")) .. " guid=" .. tostring(GetGUID("target")))

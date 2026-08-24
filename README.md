@@ -1,49 +1,62 @@
 # NameplateSCT-Vanilla
 
-A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/NameplateSCT), rewritten for the original WoW client and SuperWoW.
+A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/NameplateSCT), rewritten for the original WoW client.
 
-The project keeps the core idea of displaying scrolling combat text on enemy nameplates, but most of the implementation is specific to the Vanilla 1.12 API and SuperWoW GUID/nameplate extensions.
+The project keeps the core idea of displaying scrolling combat text on enemy nameplates while using a lightweight implementation designed around the Vanilla 1.12 API.
 
-> **Current status:** `0.4.1a` — development build.
+> **Current status:** `0.4.2-test` — development build.
 
 ## Requirements
 
 - World of Warcraft 1.12.1 compatible client
-- SuperWoW
-- English combat-log strings are currently assumed by the parser
+- Enemy nameplates enabled for normal use
+- English combat-log strings are currently assumed by the implemented combat parser
 
-No Ace3, LibEasing, LibSharedMedia, Masque, or ShaguPlates dependency is required.
+No Ace3, LibEasing, LibSharedMedia, Masque, or replacement-nameplate addon is required.
+
+Enhanced GUID/nameplate APIs are optional. When present, NameplateSCT-Vanilla uses them automatically for exact unit resolution; native nameplate discovery itself does not require them.
 
 ## Features currently implemented
 
-- Damage numbers anchored to native enemy nameplates
-- SuperWoW GUID-to-nameplate resolution
+- Native Vanilla nameplate discovery by scanning `WorldFrame`
+- Native nameplate lifecycle tracking through `OnShow` / `OnHide`
+- Native unit-name indexing from Blizzard nameplate FontStrings
+- Target-nameplate resolution without requiring a GUID
+- Unique visible-name fallback when the destination is unambiguous
+- Optional exact GUID-to-nameplate resolution when compatible enhanced APIs are available
 - Bidirectional GUID/nameplate tracking with recycled-frame cleanup
+- Visibility-generation protection so active text cannot jump onto a recycled frame
 - Normal hit fountain animation
 - Critical hit / miss vertical animation with POW sizing
 - Physical and spell-school colors
 - Spell icons resolved from the Vanilla spellbook when available
-- Continued combat text motion when a killed unit's nameplate disappears
-- Parsing for several player-owned outgoing damage, critical, reflect, and avoidance events
+- Continued combat text motion when a unit's nameplate disappears
 - Internal debug/error capture and diagnostic slash commands
 
-## v0.4.1a
+## v0.4.2-test
 
-This patch focuses on nameplate tracking stability rather than new visual features.
+This patch introduces the native Vanilla nameplate backend.
 
-- Added reverse `nameplate -> GUID` tracking.
-- Removes the previous GUID association when a native nameplate frame is recycled for another unit.
-- Removes stale mappings for nameplate frames no longer discovered under `WorldFrame`.
-- Caches the resolved nameplate on each active combat-text object.
-- Validates cached plates against the reverse GUID mapping before using them.
-- Stops resolving a nameplate after a text has detached from a disappeared/killed unit.
-- Keeps the existing fountain and critical movement unchanged.
+- Detects Blizzard nameplate frames from the native `Nameplate-Border` texture.
+- Accepts both native `Frame` and `Button` nameplate frame types.
+- Scans only newly added `WorldFrame` children during normal operation.
+- Hooks discovered nameplates once and tracks their `OnShow` / `OnHide` lifecycle.
+- Reads and indexes the native name FontString for GUID-less resolution.
+- Resolves the current target by exact GUID when available, otherwise by Vanilla target/nameplate state.
+- Resolves a non-target name only when exactly one visible plate has that name.
+- Refuses to guess when multiple same-named plates are ambiguous.
+- Strictly validates enhanced GUID values as `0x...` before accepting them.
+- Keeps the existing fountain and critical animations unchanged.
 
-See [`TESTING.md`](TESTING.md) for the current test matrix.
+### Current compatibility boundary
+
+`0.4.2-test` removes the GUID requirement from **nameplate discovery and target test rendering**. The existing automatic combat parser still consumes `RAW_COMBATLOG` when a client exposes that event.
+
+A native `CHAT_MSG_*` combat-event backend is planned for the next development step so automatic combat text can also operate without `RAW_COMBATLOG`.
 
 ## Installation
 
-Place the addon folder in your WoW installation:
+Place the addon folder in:
 
 ```text
 World of Warcraft/Interface/AddOns/NameplateSCT-Vanilla/
@@ -56,7 +69,7 @@ NameplateSCT-Vanilla.toc
 NameplateSCT-Vanilla.lua
 ```
 
-Enable **NameplateSCT-Vanilla** from the AddOns menu and make sure SuperWoW is installed and active.
+Enable **NameplateSCT-Vanilla** from the AddOns menu and enable enemy nameplates in game.
 
 ## Commands
 
@@ -75,27 +88,31 @@ Enable **NameplateSCT-Vanilla** from the AddOns menu and make sure SuperWoW is i
 
 `/nsct` is also registered as an alias for `/np`.
 
-Useful starting checks:
+For the native backend, the most useful first test is:
 
-1. Show an enemy nameplate and target that enemy.
-2. Run `/np status`.
-3. Run `/np test`.
-4. Run `/np crit`.
-5. Fight normally and then run `/np errors`.
+1. Use a standard Vanilla 1.12.1 client environment with no enhanced GUID/nameplate API available.
+2. Enable enemy nameplates.
+3. Target a visible enemy.
+4. Run `/np status` and confirm the native scanner sees visible/named plates.
+5. Run `/np test` and `/np crit`.
+6. Move out of nameplate range and back in, then repeat.
+
+See [`TESTING.md`](TESTING.md) for the complete test matrix.
 
 ## Development direction
 
-The Vanilla version is intentionally not being forced into the architecture of the modern addon. Planned work includes:
+Planned work includes:
 
-- performance and spell-cache cleanup
+- native `CHAT_MSG_*` outgoing-combat parsing
 - a normalized internal combat-event model
+- stronger destination resolution for ambiguous same-named enemies
+- performance and spell-cache cleanup
 - explicit damage-source classification
 - target vs. off-target scaling
 - small-hit scaling
 - spell filtering
 - clutter protection / maximum active texts
 - SavedVariables-backed configuration and slash commands
-- broader WoW 1.12.1 / SuperWoW combat-log coverage based on captured real logs
 
 The current fountain trajectory is intentional and is not scheduled for replacement.
 
@@ -105,7 +122,7 @@ NameplateSCT-Vanilla is based on and inspired by **NameplateSCT**, originally de
 
 Original project: [Justw8/NameplateSCT](https://github.com/Justw8/NameplateSCT)
 
-Although the Vanilla implementation has been largely rewritten for WoW 1.12.1 and SuperWoW, it retains the original addon's concept and parts of its visual/animation behavior.
+Although the Vanilla implementation has been largely rewritten for WoW 1.12.1, it retains the original addon's concept and parts of its visual/animation behavior.
 
 ## License
 
