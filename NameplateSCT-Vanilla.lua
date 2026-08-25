@@ -1,4 +1,4 @@
--- NameplateSCT-Vanilla v0.5.0a-test
+-- NameplateSCT-Vanilla v0.5.0b-test
 -- Development build for WoW 1.12.1.
 -- Native nameplate discovery works without enhanced client APIs. Enhanced GUID
 -- resolution is disabled by default and only enabled through /np native off.
@@ -6,7 +6,7 @@
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.5.0a-test"
+local VERSION = "0.5.0b-test"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -30,6 +30,7 @@ local plateGeneration = {}
 local hookedPlates = {}
 local fontPool = {}
 local activeTexts = {}
+local dotBindings = {}
 local scanElapsed = 0
 local initializedChildren = 0
 local rawCombatLogRegistered = nil
@@ -233,6 +234,159 @@ local function IndexPlateName(plate, name)
   plateNameByPlate[plate] = name
 end
 
+-- Native Vanilla periodic combat messages identify DoT destinations by unit
+-- name only. Remember the exact native plate selected when a harmful aura is
+-- applied so later ticks can stay attached even when other same-named units
+-- are visible. A binding is valid only for the visibility generation in which
+-- it was learned; recycled/hidden plates are never reused implicitly.
+local function GetDotBucket(spell, targetName, create)
+  if not spell or spell == "" or not targetName or targetName == "" then return nil end
+  local byName = dotBindings[spell]
+  if not byName and create then
+    byName = {}
+    dotBindings[spell] = byName
+  end
+  if not byName then return nil end
+
+  local bucket = byName[targetName]
+  if not bucket and create then
+    bucket = {}
+    byName[targetName] = bucket
+  end
+  return bucket
+end
+
+local function RemoveEmptyDotBucket(spell, targetName)
+  local byName = dotBindings[spell]
+  if not byName then return end
+  local bucket = byName[targetName]
+  if bucket and not next(bucket) then
+    byName[targetName] = nil
+  end
+  if not next(byName) then
+    dotBindings[spell] = nil
+  end
+end
+
+local function PruneDotBucket(spell, targetName)
+  local bucket = GetDotBucket(spell, targetName, nil)
+  if not bucket then return nil, 0 end
+
+  local count = 0
+  local invalid = {}
+  local plate, entry
+  for plate, entry in pairs(bucket) do
+    local valid = plate
+      and plate.IsShown and plate:IsShown()
+      and plateNameByPlate[plate] == targetName
+      and (plateGeneration[plate] or 0) == (entry.generation or -1)
+    if valid then
+      count = count + 1
+    else
+      table.insert(invalid, plate)
+    end
+  end
+
+  local i
+  for i = 1, table.getn(invalid) do
+    bucket[invalid[i]] = nil
+  end
+
+  RemoveEmptyDotBucket(spell, targetName)
+  return GetDotBucket(spell, targetName, nil), count
+end
+
+local function BindDotTarget(spell, targetName, plate, resolutionMode)
+  if not spell or not targetName or not plate then return nil end
+  local bucket = GetDotBucket(spell, targetName, 1)
+  bucket[plate] = {
+    generation = plateGeneration[plate] or 0,
+    boundAt = GetTime(),
+    resolutionMode = resolutionMode,
+  }
+
+  local _, count = PruneDotBucket(spell, targetName)
+  DebugLog("DOTBIND", "spell=" .. tostring(spell) .. " name=" .. tostring(targetName) .. " mode=" .. tostring(resolutionMode) .. " generation=" .. tostring(plateGeneration[plate] or 0) .. " bindings=" .. tostring(count))
+  return 1
+end
+
+local function RemoveDotBindingsForPlate(plate, reason)
+  if not plate then return end
+  local removed = 0
+  local emptySpells = {}
+  local spell, byName
+  for spell, byName in pairs(dotBindings) do
+    local emptyNames = {}
+    local targetName, bucket
+    for targetName, bucket in pairs(byName) do
+      if bucket[plate] then
+        bucket[plate] = nil
+        removed = removed + 1
+      end
+      if not next(bucket) then table.insert(emptyNames, targetName) end
+    end
+    local i
+    for i = 1, table.getn(emptyNames) do
+      byName[emptyNames[i]] = nil
+    end
+    if not next(byName) then table.insert(emptySpells, spell) end
+  end
+
+  local i
+  for i = 1, table.getn(emptySpells) do
+    dotBindings[emptySpells[i]] = nil
+  end
+
+  if removed > 0 then
+    DebugLog("DOTDROP", "plate=" .. tostring(plateNameByPlate[plate] or ReadPlateName(plate)) .. " bindings=" .. tostring(removed) .. " reason=" .. tostring(reason))
+  end
+end
+
+local function ResolveDotTarget(spell, targetName)
+  local bucket, count = PruneDotBucket(spell, targetName)
+  if not bucket or count == 0 then
+    return nil, nil, "none", 0
+  end
+  if count > 1 then
+    return nil, nil, "ambiguous", count
+  end
+
+  local plate
+  for plate in pairs(bucket) do
+    return plate, "dot-binding", "resolved", 1
+  end
+  return nil, nil, "none", 0
+end
+
+local function CountDotBindings()
+  local buckets = 0
+  local entries = 0
+  local ambiguous = 0
+  local spell, byName
+  for spell, byName in pairs(dotBindings) do
+    local targetName, bucket
+    for targetName, bucket in pairs(byName) do
+      local count = 0
+      local plate, entry
+      for plate, entry in pairs(bucket) do
+        if plate
+          and plate.IsShown and plate:IsShown()
+          and plateNameByPlate[plate] == targetName
+          and (plateGeneration[plate] or 0) == (entry.generation or -1)
+        then
+          count = count + 1
+        end
+      end
+      if count > 0 then
+        buckets = buckets + 1
+        entries = entries + count
+        if count > 1 then ambiguous = ambiguous + 1 end
+      end
+    end
+  end
+  return buckets, entries, ambiguous
+end
+
 local function UnbindPlate(plate)
   if not plate then return end
   local oldGUID = guidByPlate[plate]
@@ -272,6 +426,7 @@ local function RefreshPlateIdentity(plate)
   knownPlates[plate] = 1
 
   if not plate.IsShown or not plate:IsShown() then
+    RemoveDotBindingsForPlate(plate, "plate-hidden")
     RemovePlateNameIndex(plate)
     UnbindPlate(plate)
     return
@@ -303,6 +458,7 @@ local function OnNativePlateShow(plate)
   -- Clear any identity from the previous visibility cycle before reading the
   -- frame again. The periodic refresh will pick up name text if Blizzard fills
   -- it a moment after OnShow.
+  RemoveDotBindingsForPlate(plate, "plate-show-generation")
   RemovePlateNameIndex(plate)
   UnbindPlate(plate)
   RefreshPlateIdentity(plate)
@@ -312,6 +468,7 @@ end
 local function OnNativePlateHide(plate)
   plateGeneration[plate] = (plateGeneration[plate] or 0) + 1
   DebugLog("PLATEHIDE", "name=" .. tostring(plateNameByPlate[plate]) .. " guid=" .. tostring(guidByPlate[plate]))
+  RemoveDotBindingsForPlate(plate, "plate-hide")
   RemovePlateNameIndex(plate)
   UnbindPlate(plate)
 end
@@ -337,6 +494,7 @@ local function ResetNameplateIdentity()
   visiblePlatesByName = {}
   plateNameByPlate = {}
   knownPlates = {}
+  dotBindings = {}
   initializedChildren = 0
 end
 
@@ -1137,6 +1295,20 @@ local function ParseNativeSpell(message)
   return nil
 end
 
+local function ParseNativeAuraApplication(message)
+  -- Harmful aura applications share the periodic-damage chat event in Vanilla.
+  -- They do not display SCT themselves; they teach the resolver which exact
+  -- native nameplate owns a later periodic tick. Prefer the stacked-aura form
+  -- when a compatible client exposes it so the stack count is not folded into
+  -- the captured spell name.
+  local data = CaptureGlobal(message, "AURAAPPLICATIONADDEDOTHERHARMFUL", { "targetName", "spell", "stack" })
+  if data then return data end
+
+  data = CaptureGlobal(message, "AURAADDEDOTHERHARMFUL", { "targetName", "spell" })
+  if data then return data end
+  return nil
+end
+
 local function ParseNativePeriodic(message)
   local data = CaptureGlobal(message, "PERIODICAURADAMAGESELFOTHER", { "targetName", "amount", "school", "spell" })
   if data then return NewNormalizedDamage(data, "spell", nil, 1, nil) end
@@ -1185,6 +1357,23 @@ function NSCT:HandleNativeCombatEvent(eventName, message)
   DebugLog("NATIVELOG", tostring(eventName) .. " || " .. tostring(message))
   if not NameplateSCTVanillaDB.autoDisplay then return end
 
+  -- Aura-application messages use the same Vanilla chat events as periodic
+  -- damage. Consume them as resolver metadata instead of reporting them as
+  -- unmatched combat damage.
+  if eventName == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or eventName == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" then
+    local aura = ParseNativeAuraApplication(message)
+    if aura and aura.targetName and aura.spell then
+      local preferTarget = UnitName and UnitName("target") == aura.targetName and 1 or nil
+      local plate, mode = self:ResolveNameplate(nil, aura.targetName, preferTarget)
+      if plate then
+        BindDotTarget(aura.spell, aura.targetName, plate, mode)
+      else
+        DebugLog("DOTBIND", "unresolved spell=" .. tostring(aura.spell) .. " name=" .. tostring(aura.targetName))
+      end
+      return
+    end
+  end
+
   local info = ParseNativeCombatEvent(eventName, message)
   if not info then
     DebugLog("UNMATCHED", tostring(eventName) .. " || " .. tostring(message))
@@ -1198,13 +1387,25 @@ function NSCT:HandleNativeCombatEvent(eventName, message)
     return
   end
 
-  -- Direct player actions prefer the current target when names match. Periodic
-  -- events are more conservative because a DoT can tick on an off-target unit;
-  -- they fall back to an unambiguous unique-name match when exact GUID mapping
-  -- is unavailable.
-  local preferTarget = 1
-  if info.periodic then preferTarget = nil end
   DebugLog("PARSED", "backend=native event=" .. tostring(eventName) .. " kind=" .. tostring(info.kind) .. " type=" .. tostring(info.damageType) .. " result=" .. tostring(info.result) .. " amount=" .. tostring(info.amount) .. " text=" .. tostring(info.text) .. " target=" .. tostring(info.targetName) .. " guid=" .. tostring(info.guid) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic) .. " reflected=" .. tostring(info.reflected))
+
+  if info.periodic and info.spell then
+    local plate, mode, state, bindingCount = ResolveDotTarget(info.spell, info.targetName)
+    if state == "resolved" and plate then
+      DebugLog("DOTRESOLVE", "spell=" .. tostring(info.spell) .. " name=" .. tostring(info.targetName) .. " result=bound")
+      DisplayOnPlate(plate, info.guid, text, info, mode)
+      return
+    elseif state == "ambiguous" then
+      DebugLog("DOTAMBIGUOUS", "spell=" .. tostring(info.spell) .. " name=" .. tostring(info.targetName) .. " bindings=" .. tostring(bindingCount) .. " action=suppress")
+      return
+    end
+    DebugLog("DOTRESOLVE", "spell=" .. tostring(info.spell) .. " name=" .. tostring(info.targetName) .. " result=fallback")
+  end
+
+  -- Direct player actions prefer the current target when names match. Periodic
+  -- events without a learned binding remain conservative and only use an
+  -- unambiguous unique visible name.
+  local preferTarget = info.periodic and nil or 1
   self:DisplayResolved(info.guid, info.targetName, text, info, preferTarget)
 end
 
@@ -1234,7 +1435,7 @@ local function CountNativePatterns()
     "MISSEDSELFOTHER", "VSDODGESELFOTHER", "VSPARRYSELFOTHER", "VSBLOCKSELFOTHER", "VSABSORBSELFOTHER", "VSIMMUNESELFOTHER", "VSEVADESELFOTHER",
     "SPELLLOGSELFOTHER", "SPELLLOGCRITSELFOTHER", "SPELLLOGSCHOOLSELFOTHER", "SPELLLOGCRITSCHOOLSELFOTHER",
     "SPELLMISSSELFOTHER", "SPELLDODGEDSELFOTHER", "SPELLPARRIEDSELFOTHER", "SPELLBLOCKEDSELFOTHER", "SPELLRESISTSELFOTHER", "SPELLLOGABSORBSELFOTHER", "SPELLIMMUNESELFOTHER", "SPELLREFLECTSELFOTHER", "SPELLEVADEDSELFOTHER",
-    "PERIODICAURADAMAGESELFOTHER", "DAMAGESHIELDSELFOTHER",
+    "PERIODICAURADAMAGESELFOTHER", "AURAADDEDOTHERHARMFUL", "DAMAGESHIELDSELFOTHER",
   }
   local found = 0
   local i
@@ -1411,6 +1612,8 @@ function NSCT:PrintStatus()
   Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount) .. (nativeOnly and " (expected 0 in native-only mode)" or ""))
   Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
   Chat("focus styling: target scale=" .. tostring(TARGET_SCALE) .. " alpha=" .. tostring(TARGET_ALPHA) .. " strata=" .. TARGET_STRATA .. "; off-target scale=" .. tostring(OFFTARGET_SCALE) .. " alpha=" .. tostring(OFFTARGET_ALPHA) .. " strata=" .. OFFTARGET_STRATA)
+  local dotBucketCount, dotEntryCount, dotAmbiguousCount = CountDotBindings()
+  Chat("DoT bindings: buckets=" .. tostring(dotBucketCount) .. ", plates=" .. tostring(dotEntryCount) .. ", ambiguous=" .. tostring(dotAmbiguousCount))
   Chat("debug saved entries: " .. tostring(table.getn(NameplateSCTVanillaDebug.log)) .. ", errors: " .. tostring(table.getn(NameplateSCTVanillaDebug.errors)))
 end
 
