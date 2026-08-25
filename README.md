@@ -4,7 +4,7 @@ A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/Nameplat
 
 The project keeps the core idea of displaying scrolling combat text on enemy nameplates while using a lightweight implementation designed around the Vanilla 1.12 API.
 
-> **Current status:** `0.4.4-test` — development build.
+> **Current status:** `0.5.0-test` — development build.
 
 ## Requirements
 
@@ -28,6 +28,7 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Native Vanilla outgoing-combat parsing through `CHAT_MSG_*` events
 - Localized combat parsing based on Blizzard global combat strings instead of hard-coded English sentences
 - Explicit normalized combat classification for autoattacks, abilities, spells, periodic damage, reflected damage, and miss outcomes
+- Target/off-target visual focus: current-target text remains full size/opacity on HIGH strata; off-target text uses 75% scale, 72% base alpha, and MEDIUM strata
 - Normalized `result` values for hit, crit, miss, dodge, parry, block, resist, absorb, immune, reflect, and evade
 - Native parsing for MISS, DODGE, PARRY, BLOCK, RESIST, ABSORB, IMMUNE, REFLECT, and EVADE where the corresponding Vanilla global string exists
 - Optional native damage-shield/reflected-damage parsing through `CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF` when available
@@ -38,6 +39,18 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Spell icons resolved from the Vanilla spellbook when available
 - Continued combat text motion when a unit's nameplate disappears
 - Internal debug/error capture and diagnostic slash commands
+
+## v0.5.0-test
+
+This build adds target/off-target visual differentiation without changing the established fountain or POW trajectories.
+
+- Current-target combat text uses scale `1.00`, base alpha `1.00`, and `HIGH` frame strata.
+- Off-target combat text uses scale `0.75`, base alpha `0.72`, and `MEDIUM` frame strata.
+- Target identity is determined from the resolved nameplate/GUID rather than name alone, so another same-named enemy is not promoted to target styling.
+- The focus state is captured when the text is created and remains stable for that text's lifetime.
+- Existing fade timing is preserved; off-target alpha is multiplied by the normal fade curve.
+- `/np testoff` (alias `/np offtest`) sends synthetic text to a visible non-target plate for isolated testing.
+- No recent-resolution cache is included yet; late/killing-blow races remain a known deferred issue.
 
 ## v0.4.4-test
 
@@ -128,6 +141,7 @@ Enable **NameplateSCT-Vanilla** from the AddOns menu and enable enemy nameplates
 /np status
 /np test
 /np crit
+/np testoff
 /np plates
 /np dump [1-50]
 /np errors
@@ -161,8 +175,7 @@ Planned work includes:
 - hardening native combat parsing from real captured logs
 - stronger destination resolution for ambiguous same-named enemies
 - performance and spell-cache cleanup
-- explicit damage-source classification refinements
-- target vs. off-target scaling
+- continued target/off-target and multitarget testing
 - small-hit scaling
 - spell filtering
 - clutter protection / maximum active texts

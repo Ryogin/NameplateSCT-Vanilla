@@ -1,4 +1,4 @@
--- NameplateSCT-Vanilla v0.4.4-test
+-- NameplateSCT-Vanilla v0.5.0-test
 -- Development build for WoW 1.12.1.
 -- Native nameplate discovery works without enhanced client APIs; GUID resolution
 -- is used automatically when a compatible client exposes it.
@@ -6,10 +6,19 @@
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.4.4-test"
+local VERSION = "0.5.0-test"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
+
+-- v0.5.0 visual focus policy. These are internal defaults for now and will
+-- become SavedVariables-backed settings in the configuration milestone.
+local TARGET_SCALE = 1.00
+local TARGET_ALPHA = 1.00
+local TARGET_STRATA = "HIGH"
+local OFFTARGET_SCALE = 0.75
+local OFFTARGET_ALPHA = 0.72
+local OFFTARGET_STRATA = "MEDIUM"
 
 local platesByGUID = {}
 local guidByPlate = {}
@@ -453,6 +462,49 @@ function NSCT:ResolveNameplate(guid, name, preferTarget)
   return nil
 end
 
+local function IsTargetResolutionMode(mode)
+  return mode == "target-alpha" or mode == "target-unique-name"
+end
+
+local function IsResolvedPlateTarget(plate, guid, name, resolutionMode)
+  if not plate then return nil end
+
+  -- Native target-specific resolution modes already prove that this frame is
+  -- the current target, even when the client cannot map its GUID directly.
+  if IsTargetResolutionMode(resolutionMode) then return 1 end
+
+  local targetName = UnitName and UnitName("target") or nil
+  if not targetName then return nil end
+
+  local targetGUID = GetGUID("target")
+  if guid and targetGUID and guid == targetGUID then return 1 end
+
+  -- If the names differ, this cannot be the current target. When names are the
+  -- same, compare the resolved frames rather than trusting the name alone so a
+  -- second same-named enemy is never promoted to target styling.
+  if name and name ~= targetName then return nil end
+  local targetPlate = NSCT:GetTargetNameplate()
+  if targetPlate and targetPlate == plate then return 1 end
+  return nil
+end
+
+local function ApplyTargetVisualPolicy(fs, isTarget)
+  if not fs or not fs.holder then return end
+  if isTarget then
+    fs.targetState = "target"
+    fs.visualScale = TARGET_SCALE
+    fs.baseAlpha = TARGET_ALPHA
+    fs.frameStrata = TARGET_STRATA
+  else
+    fs.targetState = "offtarget"
+    fs.visualScale = OFFTARGET_SCALE
+    fs.baseAlpha = OFFTARGET_ALPHA
+    fs.frameStrata = OFFTARGET_STRATA
+  end
+  fs.holder:SetScale(fs.visualScale)
+  fs.holder:SetFrameStrata(fs.frameStrata)
+end
+
 -- Build a spell-name -> icon lookup from the player spellbook.  This is
 -- intentionally independent of modern GetSpellInfo APIs, which do not exist
 -- in the 1.12 client, which uses the classic spellbook functions.
@@ -584,6 +636,10 @@ local function ReleaseFontString(fs)
   fs.plateName = nil
   fs.plateGeneration = nil
   fs.resolutionMode = nil
+  fs.targetState = nil
+  fs.visualScale = nil
+  fs.baseAlpha = nil
+  fs.frameStrata = nil
   fs.started = nil
   fs.duration = nil
   fs.animation = nil
@@ -656,6 +712,10 @@ local function DisplayOnPlate(plate, guid, text, info, resolutionMode)
   fs.plateName = plateNameByPlate[plate] or ReadPlateName(plate)
   fs.plateGeneration = plateGeneration[plate] or 0
   fs.resolutionMode = resolutionMode or (fs.guid and "guid" or "native")
+  local isTarget = IsResolvedPlateTarget(plate, fs.guid, fs.plateName, fs.resolutionMode)
+  ApplyTargetVisualPolicy(fs, isTarget)
+  fs:SetAlpha(fs.baseAlpha or 1)
+  if fs.icon and fs.icon:IsShown() then fs.icon:SetAlpha(fs.baseAlpha or 1) end
   fs.started = GetTime()
   -- Preserve a WorldFrame-relative position in case this is a killing blow
   -- and the native plate disappears before the next OnUpdate.
@@ -679,7 +739,7 @@ local function DisplayOnPlate(plate, guid, text, info, resolutionMode)
   end
 
   table.insert(activeTexts, fs)
-  DebugLog("DISPLAY", "mode=" .. tostring(fs.resolutionMode) .. " guid=" .. tostring(fs.guid) .. " name=" .. tostring(fs.plateName) .. " text=" .. tostring(text) .. " kind=" .. tostring(info.kind) .. " type=" .. tostring(info.damageType) .. " result=" .. tostring(info.result) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic) .. " reflected=" .. tostring(info.reflected) .. " pow=" .. tostring(fs.pow) .. " icon=" .. tostring(texture) .. " height=" .. tostring(size) .. " popStart=" .. tostring(fs.popStartHeight))
+  DebugLog("DISPLAY", "mode=" .. tostring(fs.resolutionMode) .. " focus=" .. tostring(fs.targetState) .. " scale=" .. tostring(fs.visualScale) .. " baseAlpha=" .. tostring(fs.baseAlpha) .. " strata=" .. tostring(fs.frameStrata) .. " guid=" .. tostring(fs.guid) .. " name=" .. tostring(fs.plateName) .. " text=" .. tostring(text) .. " kind=" .. tostring(info.kind) .. " type=" .. tostring(info.damageType) .. " result=" .. tostring(info.result) .. " spell=" .. tostring(info.spell) .. " school=" .. tostring(info.school) .. " crit=" .. tostring(info.critical) .. " periodic=" .. tostring(info.periodic) .. " reflected=" .. tostring(info.reflected) .. " pow=" .. tostring(fs.pow) .. " icon=" .. tostring(texture) .. " height=" .. tostring(size) .. " popStart=" .. tostring(fs.popStartHeight))
   return 1
 end
 
@@ -806,12 +866,14 @@ local function UpdateTexts()
         end
       end
 
-      local alpha = 1
+      local fadeAlpha = 1
       -- Keep the crit visually solid through its impact, then fade. Normal hits
-      -- retain the proven v0.3.5 timing.
+      -- retain the proven v0.3.5 timing. Off-target text multiplies this fade by
+      -- its lower base alpha instead of replacing the established fade curve.
       local fadeStart = fs.critical and 0.48 or (fs.pow and 0.48 or 0.62)
-      if progress > fadeStart then alpha = 1 - ((progress - fadeStart) / (1 - fadeStart)) end
-      if alpha < 0 then alpha = 0 end
+      if progress > fadeStart then fadeAlpha = 1 - ((progress - fadeStart) / (1 - fadeStart)) end
+      if fadeAlpha < 0 then fadeAlpha = 0 end
+      local alpha = fadeAlpha * (fs.baseAlpha or 1)
       fs:SetAlpha(alpha)
       if fs.icon and fs.icon:IsShown() then fs.icon:SetAlpha(alpha) end
     end
@@ -1326,6 +1388,7 @@ function NSCT:PrintStatus()
   Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable") .. (nativeCombatBackendAvailable and " (diagnostic/fallback only)" or ""))
   Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
   Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
+  Chat("focus styling: target scale=" .. tostring(TARGET_SCALE) .. " alpha=" .. tostring(TARGET_ALPHA) .. " strata=" .. TARGET_STRATA .. "; off-target scale=" .. tostring(OFFTARGET_SCALE) .. " alpha=" .. tostring(OFFTARGET_ALPHA) .. " strata=" .. OFFTARGET_STRATA)
   Chat("debug saved entries: " .. tostring(table.getn(NameplateSCTVanillaDebug.log)) .. ", errors: " .. tostring(table.getn(NameplateSCTVanillaDebug.errors)))
 end
 
@@ -1360,6 +1423,40 @@ function NSCT:TestCritTarget()
     Chat("Synthetic CRIT sent using " .. tostring(mode) .. " resolution. Existing movement is unchanged.")
   else
     Chat("Target nameplate was not resolved.")
+  end
+end
+
+function NSCT:TestOffTarget()
+  self:ScanNameplates(1)
+  local targetPlate = self:GetTargetNameplate()
+  local targetName = UnitName and UnitName("target") or nil
+  local candidate = nil
+  local candidateName = nil
+  local plate
+  for plate in pairs(knownPlates) do
+    if plate ~= targetPlate and plate.IsShown and plate:IsShown() then
+      local name = plateNameByPlate[plate] or ReadPlateName(plate)
+      -- If the target frame itself cannot be resolved, a same-named plate is
+      -- ambiguous and is not safe for a synthetic off-target assertion.
+      local safeOffTarget = not targetName or name ~= targetName or targetPlate
+      if name and name ~= "" and safeOffTarget then
+        candidate = plate
+        candidateName = name
+        break
+      end
+    end
+  end
+
+  if not candidate then
+    Chat("No visible off-target nameplate found. Show at least two enemy nameplates and try /np testoff again.")
+    return
+  end
+
+  local guid = guidByPlate[candidate] or PlateGUID(candidate)
+  if DisplayOnPlate(candidate, guid, "OFF 123", { kind="damage", source="player", damageType="spell", result="hit", school="Shadow" }, "test-offtarget") then
+    Chat("Synthetic off-target text sent to " .. tostring(candidateName) .. " using off-target styling.")
+  else
+    Chat("Visible off-target nameplate was found but test display failed.")
   end
 end
 
@@ -1570,6 +1667,8 @@ local function SlashHandler(msg)
     NSCT:TestTarget()
   elseif cmd == "crit" or cmd == "testcrit" then
     NSCT:TestCritTarget()
+  elseif cmd == "testoff" or cmd == "offtest" then
+    NSCT:TestOffTarget()
   elseif cmd == "fonttest" then
     NSCT:FontTest()
   elseif cmd == "sizetest" then
@@ -1589,7 +1688,7 @@ local function SlashHandler(msg)
     NameplateSCTVanillaDB.autoDisplay = not NameplateSCTVanillaDB.autoDisplay
     Chat("automatic parsed damage display: " .. (NameplateSCTVanillaDB.autoDisplay and "ON" or "OFF"))
   else
-    Chat("commands: /np status | test | crit | sizetest | fonttest | plates | dump [1-50] | errors | clear | clearlog | auto")
+    Chat("commands: /np status | test | crit | testoff | sizetest | fonttest | plates | dump [1-50] | errors | clear | clearlog | auto")
   end
 end
 
@@ -1611,7 +1710,7 @@ frame:SetScript("OnEvent", function()
     DebugLog("INIT", "native nameplate scanner enabled; UnitNameplate=" .. tostring(UnitNameplate and 1 or nil) .. " UnitGUID=" .. tostring(UnitGUID and 1 or nil) .. " RAW_COMBATLOG=" .. tostring(rawCombatLogRegistered))
     DebugLog("INIT", "native combat events=" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " required optional=" .. tostring(nativeOptionalCombatEventCount) .. "/" .. tostring(table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS)) .. " patterns=" .. tostring(patternCount) .. "/" .. tostring(patternTotal) .. " selected=" .. tostring(nativeCombatBackendAvailable and "native" or (rawCombatLogRegistered and "raw" or "none")))
     RebuildSpellTextureCache()
-    Chat("loaded " .. VERSION .. ". Native nameplate and combat-event backends are active. Type /np status.")
+    Chat("loaded " .. VERSION .. ". Native backends and target/off-target focus styling are active. Type /np status.")
   elseif event == "SPELLS_CHANGED" then
     RebuildSpellTextureCache()
   elseif event == "PLAYER_ENTERING_WORLD" then

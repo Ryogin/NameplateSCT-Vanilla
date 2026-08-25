@@ -2,9 +2,9 @@
 
 ## Current build
 
-`0.4.4-test`
+`0.5.0-test`
 
-Primary goal: validate explicit damage-source and outcome classification on top of the already working native Vanilla combat parser, without changing visual behavior.
+Primary goal: validate target/off-target visual differentiation on top of the working native nameplate and combat backends, without changing fountain or POW trajectories.
 
 ## Clean-session preparation
 
@@ -20,6 +20,53 @@ Expected:
 - `native combat backend: active (5/5 required; 0/1 or 1/1 optional)` on a compatible Vanilla 1.12.1 client.
 - `display backend: native CHAT_MSG` when the native backend is complete.
 - `RAW_COMBATLOG` may also report as registered, but it must not create duplicate floating text while the native backend is active.
+
+## Target / off-target focus — highest priority
+
+### Current target
+
+1. Target one enemy with its nameplate visible.
+2. Use `/np test`, `/np crit`, or deal normal damage.
+
+Expected:
+
+- `[DISPLAY] ... focus=target scale=1 baseAlpha=1 strata=HIGH`.
+- Target text retains the existing full-size appearance and animation paths.
+- Critical POW remains visually unchanged apart from the explicit focus metadata.
+
+### Synthetic off-target
+
+1. Show at least two enemy nameplates.
+2. Keep one enemy targeted.
+3. Run `/np testoff`.
+
+Expected:
+
+- The synthetic `OFF 123` appears over a different visible nameplate.
+- `[DISPLAY] ... focus=offtarget scale=0.75 baseAlpha=0.72 strata=MEDIUM`.
+- The off-target text is visibly smaller and less opaque than target text.
+- The fountain trajectory itself is unchanged.
+
+### Real off-target damage
+
+Warlock DoTs are particularly useful:
+
+1. Apply a DoT to one enemy.
+2. Switch target to a different enemy while the first nameplate remains visible.
+3. Allow the first DoT to tick.
+
+Expected:
+
+- The periodic event resolves to the original enemy when resolution is unambiguous.
+- Its `[DISPLAY]` entry reports `focus=offtarget`.
+- If multiple same-named visible enemies make the destination ambiguous, the addon should suppress the display rather than guess.
+
+### Same-name safety
+
+With two or more visible enemies sharing the same name:
+
+- Only the actually resolved target frame should receive `focus=target`.
+- A name match alone must never promote a different frame to target styling.
 
 ## Native combat parser — highest priority
 
@@ -181,7 +228,7 @@ If the client provides auxiliary GUIDs:
 /np clearlog
 ```
 
-Important log tags in `0.4.4-test`:
+Important log tags in `0.5.0-test`:
 
 ```text
 [NATIVELOG]  raw native CHAT_MSG_* payload
@@ -192,6 +239,16 @@ Important log tags in `0.4.4-test`:
 ```
 
 ## Version history relevant to current testing
+
+### 0.5.0-test
+
+- Target styling: `1.00` scale, `1.00` base alpha, `HIGH` strata.
+- Off-target styling: `0.75` scale, `0.72` base alpha, `MEDIUM` strata.
+- Resolved-frame/GUID-based focus classification instead of name-only classification.
+- Stable per-text focus state across the animation lifetime.
+- `/np testoff` / `/np offtest` synthetic off-target test.
+- Existing fountain, vertical POW, and fade timing preserved.
+- Recent-resolution cache remains deferred.
 
 ### 0.4.4-test
 

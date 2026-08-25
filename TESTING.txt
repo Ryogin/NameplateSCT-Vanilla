@@ -1,4 +1,4 @@
-NameplateSCT-Vanilla v0.4.4-test
+NameplateSCT-Vanilla v0.5.0-test
 
 TESTING.md is the canonical test matrix for the current build.
 
@@ -18,10 +18,11 @@ Expected log flow:
 
 Any [UNMATCHED] entry is useful parser test data and should be preserved exactly.
 
-v0.4.4-test focus:
-- explicit damage-source and result classification
-- normalized autoattack / ability / spell / periodic / reflected / miss events
-- optional CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF reflected-damage parsing
-- native and RAW fallback events share the same internal contract
-- no duplicate SCT when RAW_COMBATLOG is also present
-- existing native nameplate resolution and animations remain unchanged
+v0.5.0-test focus:
+- target: scale 1.00, alpha 1.00, HIGH strata
+- off-target: scale 0.75, alpha 0.72, MEDIUM strata
+- use /np testoff with two visible nameplates for a synthetic off-target check
+- real DoT ticks after switching target are the preferred off-target combat test
+- focus classification uses the resolved frame/GUID, not name alone
+- existing fountain and POW trajectories remain unchanged
+- late/killing-blow recent-resolution cache remains deferred
