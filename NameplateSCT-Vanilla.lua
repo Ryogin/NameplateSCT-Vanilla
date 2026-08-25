@@ -1,12 +1,12 @@
--- NameplateSCT-Vanilla v0.5.0-test
+-- NameplateSCT-Vanilla v0.5.0a-test
 -- Development build for WoW 1.12.1.
--- Native nameplate discovery works without enhanced client APIs; GUID resolution
--- is used automatically when a compatible client exposes it.
+-- Native nameplate discovery works without enhanced client APIs. Enhanced GUID
+-- resolution is disabled by default and only enabled through /np native off.
 
 NameplateSCTVanilla = NameplateSCTVanilla or {}
 local NSCT = NameplateSCTVanilla
 
-local VERSION = "0.5.0-test"
+local VERSION = "0.5.0a-test"
 local PREFIX = "|cff33ff99NSCT-V|r"
 local MAX_LOG = 250
 local MAX_ERRORS = 50
@@ -58,6 +58,9 @@ local function EnsureDB()
   if NameplateSCTVanillaDB.enabled == nil then NameplateSCTVanillaDB.enabled = 1 end
   if NameplateSCTVanillaDB.debug == nil then NameplateSCTVanillaDB.debug = 1 end
   if NameplateSCTVanillaDB.autoDisplay == nil then NameplateSCTVanillaDB.autoDisplay = 1 end
+  -- Native-only is the default so enhanced client APIs never influence addon
+  -- behavior unless the user explicitly opts in for comparison/debugging.
+  if NameplateSCTVanillaDB.forceNative == nil then NameplateSCTVanillaDB.forceNative = 1 end
   if not NameplateSCTVanillaDebug then NameplateSCTVanillaDebug = {} end
   if not NameplateSCTVanillaDebug.log then NameplateSCTVanillaDebug.log = {} end
   if not NameplateSCTVanillaDebug.errors then NameplateSCTVanillaDebug.errors = {} end
@@ -110,7 +113,14 @@ local function IsGUID(value)
   return nil
 end
 
+local function NativeOnlyEnabled()
+  -- Default to native-only even before SavedVariables are available. A stored
+  -- value of 0 is the only explicit opt-in to enhanced client APIs.
+  return not (NameplateSCTVanillaDB and NameplateSCTVanillaDB.forceNative == 0)
+end
+
 local function GetGUID(unit)
+  if NativeOnlyEnabled() then return nil end
   if not unit then return nil end
 
   -- Some 1.12-compatible clients expose UnitGUID directly.
@@ -153,6 +163,7 @@ local function IsNamePlate(frame)
 end
 
 local function PlateGUID(plate)
+  if NativeOnlyEnabled() then return nil end
   if not plate or not plate.GetName then return nil end
   -- Enhanced clients may expose the represented unit GUID through GetName(1).
   -- Stock Vanilla may simply ignore the extra argument, so validate the result
@@ -364,6 +375,7 @@ function NSCT:ScanNameplates(force)
 end
 
 function NSCT:GetNameplate(guid)
+  if NativeOnlyEnabled() then return nil end
   if not IsGUID(guid) then return nil end
 
   -- Prefer a direct GUID -> nameplate API when the client exposes one.
@@ -1333,6 +1345,9 @@ local function ParseOutgoing(rawText)
 end
 
 function NSCT:HandleRawCombatLog(originalEvent, rawText)
+  -- Native-only mode intentionally ignores RAW_COMBATLOG completely so an
+  -- enhanced client cannot influence display or diagnostic interpretation.
+  if NativeOnlyEnabled() then return end
   DebugLog("RAW", tostring(originalEvent) .. " || " .. tostring(rawText))
   if not NameplateSCTVanillaDB.autoDisplay then return end
   -- Prevent duplicate SCT when both native CHAT_MSG_* and RAW_COMBATLOG exist.
@@ -1380,16 +1395,41 @@ function NSCT:PrintStatus()
     if ok and exists and IsGUID(guid) then unitExistsGUID = 1 end
   end
 
+  local nativeOnly = NativeOnlyEnabled()
   Chat("version " .. VERSION)
+  Chat("native-only mode: " .. (nativeOnly and "ON" or "OFF") .. (nativeOnly and " (enhanced identity APIs ignored)" or " (enhanced identity APIs allowed)"))
   Chat("native scanner: active; known=" .. tostring(plateCount) .. ", visible=" .. tostring(visibleCount) .. ", named=" .. tostring(namedCount))
-  Chat("UnitExists GUID: " .. (unitExistsGUID and "yes" or "no") .. "; UnitGUID API: " .. (UnitGUID and "yes" or "no") .. "; UnitNameplate API: " .. (UnitNameplate and "yes" or "no"))
-  local selectedBackend = nativeCombatBackendAvailable and "native CHAT_MSG" or (rawCombatLogRegistered and "RAW_COMBATLOG" or "none")
+  local ignored = nativeOnly and " (ignored)" or ""
+  Chat("UnitExists GUID: " .. (unitExistsGUID and "yes" or "no") .. ignored .. "; UnitGUID API: " .. (UnitGUID and "yes" or "no") .. ignored .. "; UnitNameplate API: " .. (UnitNameplate and "yes" or "no") .. ignored)
+  local selectedBackend = nativeCombatBackendAvailable and "native CHAT_MSG" or ((not nativeOnly and rawCombatLogRegistered) and "RAW_COMBATLOG" or "none")
   Chat("native combat backend: " .. (nativeCombatBackendAvailable and "active" or "partial/unavailable") .. " (" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " required; " .. tostring(nativeOptionalCombatEventCount) .. "/" .. tostring(table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS)) .. " optional); display backend: " .. selectedBackend)
-  Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable") .. (nativeCombatBackendAvailable and " (diagnostic/fallback only)" or ""))
-  Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount))
+  if nativeOnly then
+    Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "available but ignored" or "unavailable"))
+  else
+    Chat("RAW_COMBATLOG backend: " .. (rawCombatLogRegistered and "registered" or "unavailable") .. (nativeCombatBackendAvailable and " (diagnostic/fallback only)" or ""))
+  end
+  Chat("GUID mappings: " .. tostring(guidCount) .. ", reverse mappings: " .. tostring(reverseCount) .. (nativeOnly and " (expected 0 in native-only mode)" or ""))
   Chat("target: " .. tostring(UnitName and UnitName("target") or nil) .. ", GUID=" .. tostring(GetGUID("target")) .. ", plate=" .. tostring(targetPlate and "resolved" or "unresolved") .. ", mode=" .. tostring(targetMode))
   Chat("focus styling: target scale=" .. tostring(TARGET_SCALE) .. " alpha=" .. tostring(TARGET_ALPHA) .. " strata=" .. TARGET_STRATA .. "; off-target scale=" .. tostring(OFFTARGET_SCALE) .. " alpha=" .. tostring(OFFTARGET_ALPHA) .. " strata=" .. OFFTARGET_STRATA)
   Chat("debug saved entries: " .. tostring(table.getn(NameplateSCTVanillaDebug.log)) .. ", errors: " .. tostring(table.getn(NameplateSCTVanillaDebug.errors)))
+end
+
+function NSCT:SetNativeOnly(enabled)
+  EnsureDB()
+  NameplateSCTVanillaDB.forceNative = enabled and 1 or 0
+
+  -- Never retain enhanced GUID/nameplate mappings across a mode transition.
+  ResetNameplateIdentity()
+  playerGUID = GetGUID("player")
+  self:ScanNameplates(1)
+
+  DebugLog("MODE", "nativeOnly=" .. tostring(enabled and 1 or 0) .. " playerGUID=" .. tostring(playerGUID))
+  if enabled then
+    Chat("native-only mode: ON. Enhanced GUID/nameplate APIs and RAW_COMBATLOG are ignored.")
+  else
+    Chat("native-only mode: OFF. Enhanced identity APIs may be used when available.")
+  end
+  self:PrintStatus()
 end
 
 function NSCT:TestTarget()
@@ -1687,8 +1727,17 @@ local function SlashHandler(msg)
   elseif cmd == "auto" then
     NameplateSCTVanillaDB.autoDisplay = not NameplateSCTVanillaDB.autoDisplay
     Chat("automatic parsed damage display: " .. (NameplateSCTVanillaDB.autoDisplay and "ON" or "OFF"))
+  elseif cmd == "native" then
+    rest = string.lower(rest or "")
+    if rest == "on" then
+      NSCT:SetNativeOnly(1)
+    elseif rest == "off" then
+      NSCT:SetNativeOnly(nil)
+    else
+      Chat("usage: /np native on | off (currently " .. (NativeOnlyEnabled() and "ON" or "OFF") .. ")")
+    end
   else
-    Chat("commands: /np status | test | crit | testoff | sizetest | fonttest | plates | dump [1-50] | errors | clear | clearlog | auto")
+    Chat("commands: /np status | native on|off | test | crit | testoff | sizetest | fonttest | plates | dump [1-50] | errors | clear | clearlog | auto")
   end
 end
 
@@ -1707,10 +1756,10 @@ frame:SetScript("OnEvent", function()
     InstallErrorCapture()
     DebugLog("INIT", "loaded version=" .. VERSION)
     local patternCount, patternTotal = CountNativePatterns()
-    DebugLog("INIT", "native nameplate scanner enabled; UnitNameplate=" .. tostring(UnitNameplate and 1 or nil) .. " UnitGUID=" .. tostring(UnitGUID and 1 or nil) .. " RAW_COMBATLOG=" .. tostring(rawCombatLogRegistered))
-    DebugLog("INIT", "native combat events=" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " required optional=" .. tostring(nativeOptionalCombatEventCount) .. "/" .. tostring(table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS)) .. " patterns=" .. tostring(patternCount) .. "/" .. tostring(patternTotal) .. " selected=" .. tostring(nativeCombatBackendAvailable and "native" or (rawCombatLogRegistered and "raw" or "none")))
+    DebugLog("INIT", "native nameplate scanner enabled; nativeOnly=" .. tostring(NativeOnlyEnabled() and 1 or 0) .. " UnitNameplate=" .. tostring(UnitNameplate and 1 or nil) .. " UnitGUID=" .. tostring(UnitGUID and 1 or nil) .. " RAW_COMBATLOG=" .. tostring(rawCombatLogRegistered))
+    DebugLog("INIT", "native combat events=" .. tostring(nativeCombatEventCount) .. "/" .. tostring(table.getn(NATIVE_COMBAT_EVENTS)) .. " required optional=" .. tostring(nativeOptionalCombatEventCount) .. "/" .. tostring(table.getn(OPTIONAL_NATIVE_COMBAT_EVENTS)) .. " patterns=" .. tostring(patternCount) .. "/" .. tostring(patternTotal) .. " selected=" .. tostring(nativeCombatBackendAvailable and "native" or ((not NativeOnlyEnabled() and rawCombatLogRegistered) and "raw" or "none")))
     RebuildSpellTextureCache()
-    Chat("loaded " .. VERSION .. ". Native backends and target/off-target focus styling are active. Type /np status.")
+    Chat("loaded " .. VERSION .. ". Native-only mode is " .. (NativeOnlyEnabled() and "ON" or "OFF") .. ". Type /np status.")
   elseif event == "SPELLS_CHANGED" then
     RebuildSpellTextureCache()
   elseif event == "PLAYER_ENTERING_WORLD" then
@@ -1724,7 +1773,9 @@ frame:SetScript("OnEvent", function()
   elseif event == "CHAT_MSG_COMBAT_SELF_HITS" or event == "CHAT_MSG_COMBAT_SELF_MISSES" or event == "CHAT_MSG_SPELL_SELF_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" or event == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" or event == "CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF" then
     NSCT:HandleNativeCombatEvent(event, arg1)
   elseif event == "RAW_COMBATLOG" then
-    NSCT:HandleRawCombatLog(arg1, arg2)
+    if not NativeOnlyEnabled() then
+      NSCT:HandleRawCombatLog(arg1, arg2)
+    end
   end
 end)
 

@@ -2,7 +2,7 @@
 
 ## Current build
 
-`0.5.0-test`
+`0.5.0a-test`
 
 Primary goal: validate target/off-target visual differentiation on top of the working native nameplate and combat backends, without changing fountain or POW trajectories.
 
@@ -228,7 +228,7 @@ If the client provides auxiliary GUIDs:
 /np clearlog
 ```
 
-Important log tags in `0.5.0-test`:
+Important log tags in `0.5.0a-test`:
 
 ```text
 [NATIVELOG]  raw native CHAT_MSG_* payload
@@ -240,8 +240,12 @@ Important log tags in `0.5.0-test`:
 
 ## Version history relevant to current testing
 
-### 0.5.0-test
+### 0.5.0a-test
 
+- Native-only mode defaults to ON and persists through `NameplateSCTVanillaDB.forceNative`.
+- `/np native on|off` toggles whether enhanced identity APIs / RAW fallback may participate.
+- Mode transitions reset nameplate identity state to prevent stale GUID mappings.
+- `/np status` reports enhanced capabilities as ignored while native-only mode is ON.
 - Target styling: `1.00` scale, `1.00` base alpha, `HIGH` strata.
 - Off-target styling: `0.75` scale, `0.72` base alpha, `MEDIUM` strata.
 - Resolved-frame/GUID-based focus classification instead of name-only classification.
@@ -284,3 +288,12 @@ Important log tags in `0.5.0-test`:
 - Target and unique-name resolution without GUIDs.
 - Strict optional GUID validation.
 - Visibility-generation protection for recycled native frames.
+
+## Native-only mode on enhanced clients
+
+1. Run `/np clear`, then `/np native on` and `/np status`.
+2. Even if the client exposes enhanced APIs, status should report them as `(ignored)`, target GUID should be `nil`, and GUID mappings should remain `0`.
+3. `/np test` should resolve through `target-alpha` or `target-unique-name`, not `guid`.
+4. `/np testoff` should still produce `focus=offtarget scale=0.75 baseAlpha=0.72 strata=MEDIUM`.
+5. Fight normally and confirm logs use `[NATIVELOG]` / `[PARSED]` without `[RAW]` entries while native-only mode is ON.
+6. `/np native off` is only a comparison/debug option; turn `/np native on` back on for stock-Vanilla compatibility testing.

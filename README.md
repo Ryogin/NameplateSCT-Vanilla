@@ -4,7 +4,7 @@ A Vanilla 1.12.1 adaptation of [NameplateSCT](https://github.com/Justw8/Nameplat
 
 The project keeps the core idea of displaying scrolling combat text on enemy nameplates while using a lightweight implementation designed around the Vanilla 1.12 API.
 
-> **Current status:** `0.5.0-test` — development build.
+> **Current status:** `0.5.0a-test` — development build.
 
 ## Requirements
 
@@ -13,7 +13,7 @@ The project keeps the core idea of displaying scrolling combat text on enemy nam
 
 No Ace3, LibEasing, LibSharedMedia, Masque, replacement-nameplate addon, or enhanced GUID API is required for the native backend.
 
-Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla uses them automatically for more exact unit resolution.
+Enhanced GUID/nameplate APIs remain optional but are ignored by default. `0.5.0a-test` starts in native-only mode; `/np native off` is an explicit comparison/debug opt-in to enhanced identity APIs.
 
 ## Features currently implemented
 
@@ -22,8 +22,9 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Native unit-name indexing from Blizzard nameplate FontStrings
 - Target-nameplate resolution without requiring a GUID
 - Unique visible-name fallback when the destination is unambiguous
-- Optional exact GUID-to-nameplate resolution when compatible APIs are available
-- Bidirectional GUID/nameplate tracking with recycled-frame cleanup
+- Native-only mode enabled by default, with enhanced GUID/nameplate identity paths intentionally disabled
+- Optional exact GUID-to-nameplate resolution only when native-only mode is explicitly turned off
+- Bidirectional GUID/nameplate tracking with recycled-frame cleanup when enhanced identity is enabled
 - Visibility-generation protection so active text cannot jump onto a recycled frame
 - Native Vanilla outgoing-combat parsing through `CHAT_MSG_*` events
 - Localized combat parsing based on Blizzard global combat strings instead of hard-coded English sentences
@@ -32,7 +33,8 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Normalized `result` values for hit, crit, miss, dodge, parry, block, resist, absorb, immune, reflect, and evade
 - Native parsing for MISS, DODGE, PARRY, BLOCK, RESIST, ABSORB, IMMUNE, REFLECT, and EVADE where the corresponding Vanilla global string exists
 - Optional native damage-shield/reflected-damage parsing through `CHAT_MSG_SPELL_DAMAGESHIELDS_ON_SELF` when available
-- RAW_COMBATLOG fallback when the native combat backend is unavailable
+- Native `CHAT_MSG_*` remains the display backend in native-only mode; RAW_COMBATLOG is ignored there
+- RAW_COMBATLOG fallback remains available only when native-only mode is explicitly disabled
 - Normal hit fountain animation
 - Critical hit / miss vertical animation with POW sizing
 - Physical and spell-school colors
@@ -40,10 +42,15 @@ Enhanced GUID/nameplate APIs remain optional. When present, NameplateSCT-Vanilla
 - Continued combat text motion when a unit's nameplate disappears
 - Internal debug/error capture and diagnostic slash commands
 
-## v0.5.0-test
+## v0.5.0a-test
 
-This build adds target/off-target visual differentiation without changing the established fountain or POW trajectories.
+This hotfix adds a forced native-compatibility mode on top of the `0.5.0-test` target/off-target visual differentiation. Native-only operation is enabled by default so an enhanced client cannot silently change addon behavior.
 
+- `NameplateSCTVanillaDB.forceNative` defaults to `1` and persists across reloads/restarts.
+- `/np native on` ignores `UnitGUID`, GUID-returning `UnitExists`, `UnitNameplate`, enhanced plate GUIDs, and `RAW_COMBATLOG` for addon logic.
+- `/np native off` explicitly re-enables enhanced identity/fallback paths for comparison or debugging.
+- Switching modes clears and rebuilds nameplate identity state so stale GUID mappings cannot survive the transition.
+- `/np status` reports native-only state and marks enhanced capabilities as ignored when appropriate.
 - Current-target combat text uses scale `1.00`, base alpha `1.00`, and `HIGH` frame strata.
 - Off-target combat text uses scale `0.75`, base alpha `0.72`, and `MEDIUM` frame strata.
 - Target identity is determined from the resolved nameplate/GUID rather than name alone, so another same-named enemy is not promoted to target styling.
@@ -195,3 +202,7 @@ Although the Vanilla implementation has been largely rewritten for WoW 1.12.1, i
 ## License
 
 The upstream NameplateSCT project is distributed under the MIT License. The original copyright and license notice are retained in [`LICENSE`](LICENSE).
+
+### Native-only compatibility mode
+
+`0.5.0a-test` defaults to native-only operation even when an enhanced 1.12 client exposes GUID/nameplate APIs or `RAW_COMBATLOG`. In this mode the addon intentionally ignores `UnitGUID`, GUID-returning `UnitExists`, `UnitNameplate`, enhanced plate GUIDs, and `RAW_COMBATLOG` for addon logic. Use `/np native off` only for explicit comparison/debugging; `/np native on` restores the default. The setting persists in `NameplateSCTVanillaDB.forceNative`.
